@@ -50,7 +50,7 @@ job_report_status_va(job_t *j, const char *status0, const char *fmt, va_list ap)
         j->version ?: "<Unknown version>",
         status0, msg0);
 
-  while(1) {
+  for(int i = 0; i < 10; i++) {
 
     char *r = call_buildmaster(j->bm, "report?jobid=%d&jobsecret=%s&status=%s&msg=%s",
                                j->jobid, j->jobsecret, status, msg);
@@ -200,20 +200,24 @@ job_run_command_spawn(void *opaque)
     return 1;
   }
 
-  // First, go back to root
+  if(build_uid != -1) {
+    // Should switch UID
 
-  if(setuid(0)) {
-    fprintf(stderr, "Unable to setuid(0) -- %s\n",
-            strerror(errno));
-    return 1;
-  }
+    // First, go back to root
 
-  // Then setuid to build_uid
+    if(setuid(0)) {
+      fprintf(stderr, "Unable to setuid(0) -- %s\n",
+              strerror(errno));
+      return 1;
+    }
 
-  if(setuid(build_uid)) {
-    fprintf(stderr, "Unable to setuid(%d) -- %s\n",
-            build_uid, strerror(errno));
-    return 1;
+    // Then setuid to build_uid
+
+    if(setuid(build_uid)) {
+      fprintf(stderr, "Unable to setuid(%d) -- %s\n",
+              build_uid, strerror(errno));
+      return 1;
+    }
   }
 
   execv(aux->argv[0], (void *)aux->argv);
@@ -234,6 +238,16 @@ job_run_command(job_t *j, const char **argv,
   job_run_command_aux_t aux;
   aux.job = j;
   aux.argv = argv;
+
+  char cmdline[1024];
+  int l = 0;
+  cmdline[0] = 0;
+  for(;*argv; argv++)
+    l += snprintf(cmdline + l, sizeof(cmdline) - l, "%s%s",
+                  *argv, argv[1] ? " " : "");
+
+  job_report_status(j, "building", "Running: %s", cmdline);
+
   return spawn(job_run_command_spawn,
                job_run_command_line_intercept,
                &aux, output, 600, flags,
@@ -253,9 +267,10 @@ job_mkdir(job_t *j, char path[PATH_MAX], const char *fmt, ...)
   va_start(ap, fmt);
   vsnprintf(path + l, PATH_MAX - l, fmt, ap);
   va_end(ap);
-  if(mkdir(path, 0777) && errno != EEXIST) {
+  int r = makedirs(path);
+  if(r) {
     job_report_temp_fail(j, "Unable to create dir %s -- %s",
-                         path, strerror(errno));
+                         path, strerror(r));
     return -1;
   }
   return 0;
@@ -281,8 +296,6 @@ job_process(buildmaster_t *bm, htsmsg_t *msg)
 
   if(strcmp(type, "build"))
     return;
-
-  htsmsg_print(msg);
 
   j.jobid = htsmsg_get_u32_or_default(msg, "id", 0);
   if(j.jobid == 0) {
@@ -340,15 +353,10 @@ job_process(buildmaster_t *bm, htsmsg_t *msg)
     job_report_fail(&j, "%s", errbuf);
     return;
   }
-
   j.projectdir = heapdir;
 
-  char checkoutdir[PATH_MAX];
-  if(job_mkdir(&j, checkoutdir, "checkout"))
-    return;
-
   char repodir[PATH_MAX];
-  if(job_mkdir(&j, repodir, "checkout/%s", j.project))
+  if(job_mkdir(&j, repodir, "checkout/repo"))
     return;
   j.repodir = repodir;
 

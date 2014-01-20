@@ -1,2 +1,0 @@
-ALTER TABLE artifact ADD COLUMN dlcount INT DEFAULT 0;
-

@@ -16,37 +16,34 @@
 #
 
 
-WITH_MYSQL       := yes
-WITH_HTTP_SERVER := yes
-WITH_LIBGIT2     := yes
-WITH_CTRLSOCK    := yes
-WITH_CURL        := yes
+WITH_LIBGIT2 := yes
+WITH_CURL    := yes
+
 
 BUILDDIR = ${CURDIR}/build
 
+PROG=${BUILDDIR}/doozeragent
 
-PROG=${BUILDDIR}/doozerd
+SRCS =  src/main.c \
+	src/agent.c \
+	src/job.c \
+	src/git.c \
+	src/doozerctrl.c \
+	src/autobuild.c \
+	src/makefile.c \
+	src/artifact.c \
+	src/spawn.c \
+	src/heap_simple.c \
 
 
-SRCS =  server/main.c \
-	server/artifact_serve.c \
-	server/project.c \
-	server/buildmaster.c \
-	server/git.c \
-	server/releasemaker.c \
-	server/github.c \
-	server/restapi.c \
-	server/s3.c \
-	server/bsdiff.c
-
-BUNDLES += sql
+ifeq ($(shell uname),Linux)
+SRCS +=	src/heap_btrfs.c
+endif
 
 install: ${PROG}
-	install -D ${PROG} "${prefix}/bin/doozerd"
-	install -D -m 755 doozer "${prefix}/bin/doozer"
+	install -D ${PROG} "${prefix}/bin/doozeragent"
 uninstall:
-	rm -f "${prefix}/bin/doozerd" "${prefix}/bin/doozer"
+	rm -f "${prefix}/bin/doozeragent"
 
 include libsvc/libsvc.mk
 -include $(DEPS)
-

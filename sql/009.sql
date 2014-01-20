@@ -1,2 +1,0 @@
-ALTER TABLE artifact ADD COLUMN patchcount INT DEFAULT 0;
-

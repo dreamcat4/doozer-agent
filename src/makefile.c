@@ -46,11 +46,18 @@ makefile_process(job_t *j)
   if(aritfacts_wait(j))
     return;
 
-  if(r == 0) {
+  switch(r) {
+  case SPAWN_TEMPORARY_FAIL:
+    job_report_temp_fail(j, "%s", errbuf);
+    break;
+  case SPAWN_PERMANENT_FAIL:
+    job_report_fail(j, "%s", errbuf);
+    break;
+  case 0:
     job_report_status(j, "done", "Build done");
-  } else if(r < 0) {
-    job_report_temp_fail(j, "%s: %s", "make", errbuf);
-  } else {
-    job_report_fail(j, "%s: exited with %d", "make", r);
+    break;
+  default:
+    job_report_fail(j, "Exited with status %d", r);
+    break;
   }
 }

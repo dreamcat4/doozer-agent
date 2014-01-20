@@ -5,8 +5,8 @@
 
 extern struct heapmgr *projects_heap_mgr;
 extern struct heapmgr *buildenv_heap_mgr;
-extern uid_t build_uid;
-extern gid_t build_gid;
+extern int build_uid;
+extern int build_gid;
 
 
 /**

@@ -31,8 +31,8 @@
 
 struct heapmgr *projects_heap_mgr;
 struct heapmgr *buildenv_heap_mgr;
-uid_t build_uid;
-gid_t build_gid;
+int build_uid = -1;
+int build_gid = -1;
 
 static int running = 1;
 static int reload = 0;
@@ -78,31 +78,24 @@ get_uid_gid(void)
   const char *user  = cfg_get_str(root, CFG("user"),  NULL);
   const char *group = cfg_get_str(root, CFG("group"), NULL);
 
-  if(user == NULL) {
-    user = "nobody";
-    trace(LOG_INFO, "No user configured, using: %s", user);
+  if(user != NULL) {
+    const struct passwd *p = getpwnam(user);
+    if(p == NULL) {
+      trace(LOG_ERR, "Unable to find UID for user %s. Exiting", user);
+      exit(1);
+    }
+    build_uid = p->pw_uid;
   }
 
-  if(group == NULL) {
-    group = "nogroup";
-    trace(LOG_INFO, "No group configured, using: %s", group);
+  if(group != NULL) {
+    const struct group *g = getgrnam(group);
+
+    if(g == NULL) {
+      trace(LOG_ERR, "Unable to find GID for group %s. Exiting", group);
+      exit(1);
+    }
+    build_gid = g->gr_gid;
   }
-
-  struct passwd *p = getpwnam(user);
-  struct group *g = getgrnam(group);
-
-  if(p == NULL) {
-    trace(LOG_ERR, "Unable to find UID for user %s. Exiting", user);
-    exit(1);
-  }
-
-  if(g == NULL) {
-    trace(LOG_ERR, "Unable to find GID for group %s. Exiting", group);
-    exit(1);
-  }
-
-  build_uid = p->pw_uid;
-  build_gid = g->gr_gid;
 }
 
 
@@ -162,11 +155,6 @@ main(int argc, char **argv)
     }
   }
 
-  if(getuid() != 0) {
-    fprintf(stderr, "Doozer agent need to be run as root\n");
-    exit(1);
-  }
-
   sigfillset(&set);
   sigprocmask(SIG_BLOCK, &set, NULL);
 
@@ -181,8 +169,20 @@ main(int argc, char **argv)
 
   create_heaps();
 
-  setgid(build_gid);
-  seteuid(build_uid);
+  if(build_gid != -1) {
+    if(setgid(build_gid)) {
+      trace(LOG_ERR, "Unable to setgid(%d) -- %s", build_gid,
+            strerror(errno));
+      exit(1);
+    }
+  }
+
+  if(build_uid != -1) {
+    if(seteuid(build_uid)) {
+      trace(LOG_ERR, "Unable to seteuid(%d) -- %s", build_uid,
+            strerror(errno));
+    }
+  }
 
   git_threads_init();
 
