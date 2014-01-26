@@ -2,4 +2,4 @@
 
 struct job;
 
-void doozerctrl_process(struct job *j);
+int doozerctrl_process(struct job *j);

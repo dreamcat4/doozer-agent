@@ -477,7 +477,7 @@ artifacts_cleanup(job_t *j)
  *
  */
 int
-aritfacts_wait(job_t *j)
+artifacts_wait(job_t *j)
 {
   artifact_t *a;
 
@@ -489,10 +489,11 @@ aritfacts_wait(job_t *j)
         break;
 
     if(a != NULL) {
-      job_report_fail(j, "Unable to upload %s -- %s", a->filename, a->errbuf);
+      snprintf(j->errmsg, sizeof(j->errmsg),
+               "Unable to upload %s -- %s", a->filename, a->errbuf);
       artifacts_abort(j);
       pthread_mutex_unlock(&artifact_mutex);
-      return 1;
+      return DOOZER_PERMANENT_FAIL;
     }
 
     int waitcnt = 0;

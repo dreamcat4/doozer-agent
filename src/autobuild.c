@@ -25,74 +25,40 @@
 /**
  *
  */
-void
+int
 autobuild_process(job_t *j)
 {
-  htsbuf_queue_t output;
   int r;
-  char errbuf[1024];
-
-  htsbuf_queue_init2(&output, 100000);
-
-  r = job_run_command(j,
-                      (const char *[]){j->autobuild,
-                          "-v", NULL},
-                      &output, 0, errbuf, sizeof(errbuf));
+  r = job_run_command(j, (const char *[]){j->autobuild, "-v", NULL}, 0);
   if(r)
-    goto done;
+    return r;
 
   char line[64] = {};
 
-  htsbuf_read(&output, line, sizeof(line) - 1);
-  htsbuf_queue_flush(&output);
+  htsbuf_read(&j->buildlog, line, sizeof(line) - 1);
+  htsbuf_queue_flush(&j->buildlog);
   j->autobuild_version = atoi(line);
 
   if(j->autobuild_version != 3) {
     // This is the only version we support right now
-    job_report_fail(j, "Unsupported autobuild version %d",
-                    j->autobuild_version);
-    return;
+    snprintf(j->errmsg, sizeof(j->errmsg),
+             "Unsupported autobuild version %d",
+             j->autobuild_version);
+    return DOOZER_PERMANENT_FAIL;
   }
 
 
   r = job_run_command(j,
                       (const char *[]){j->autobuild,
                           "-t", j->target, "-o", "deps", NULL},
-                      &output, 0, errbuf, sizeof(errbuf));
+                      0);
   if(r)
-    goto done;
+    return r;
 
   r = job_run_command(j,
                       (const char *[]){j->autobuild,
                           "-t", j->target, "-o", "build", NULL},
-                      &output, 0, errbuf, sizeof(errbuf));
-  job_run_command(j,
-                  (const char *[]){j->autobuild,
-                      "-t", j->target, "-o", "clean", NULL},
-                  &output, 0, NULL, 0);
+                      0);
 
- done:
-  if(output.hq_size) {
-    if(artifact_add_htsbuf(j, "buildlog", "buildlog", NULL, &output, 1)) {
-      return;
-    }
-  }
-
-  if(aritfacts_wait(j))
-    return;
-
-  switch(r) {
-  case SPAWN_TEMPORARY_FAIL:
-    job_report_temp_fail(j, "%s", errbuf);
-    break;
-  case SPAWN_PERMANENT_FAIL:
-    job_report_fail(j, "%s", errbuf);
-    break;
-  case 0:
-    job_report_status(j, "done", "Build done");
-    break;
-  default:
-    job_report_fail(j, "Exited with status %d", r);
-    break;
-  }
+  return r;
 }

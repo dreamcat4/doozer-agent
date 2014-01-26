@@ -1,4 +1,5 @@
 #pragma once
+#include <unistd.h>
 #include "job.h"
 
 /**
@@ -43,4 +44,4 @@ int artifact_add_htsbuf(job_t *j, const char *type, const char *filename,
 
 void artifact_init(void);
 
-int aritfacts_wait(job_t *j)  __attribute__ ((warn_unused_result));
+int artifacts_wait(job_t *j)  __attribute__ ((warn_unused_result));

@@ -8,6 +8,9 @@ extern struct heapmgr *buildenv_heap_mgr;
 extern int build_uid;
 extern int build_gid;
 
+#define DOOZER_PERMANENT_FAIL -1
+#define DOOZER_TEMPORARY_FAIL -2
+
 
 /**
  *

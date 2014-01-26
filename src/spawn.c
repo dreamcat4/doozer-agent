@@ -23,6 +23,7 @@
 #include "libsvc/misc.h"
 
 #include "spawn.h"
+#include "agent.h"
 
 
 /**
@@ -43,7 +44,7 @@ spawn(int (*exec_cb)(void *opaque),
   if(pipe(pipe_stdout) || pipe(pipe_stderr)) {
     snprintf(errbuf, errlen, "Unable to create pipe -- %s",
              strerror(errno));
-    return SPAWN_TEMPORARY_FAIL;
+    return DOOZER_TEMPORARY_FAIL;
   }
 
   pid_t pid = fork();
@@ -55,7 +56,7 @@ spawn(int (*exec_cb)(void *opaque),
     close(pipe_stderr[1]);
     snprintf(errbuf, errlen, "Unable to fork -- %s",
              strerror(errno));
-    return SPAWN_TEMPORARY_FAIL;
+    return DOOZER_TEMPORARY_FAIL;
   }
 
   if(pid == 0) {
@@ -183,13 +184,13 @@ spawn(int (*exec_cb)(void *opaque),
   if(waitpid(pid, &status, 0) == -1) {
     snprintf(errbuf, errlen, "Unable to wait for child -- %s",
              strerror(errno));
-    return SPAWN_TEMPORARY_FAIL;
+    return DOOZER_TEMPORARY_FAIL;
   }
 
   if(got_timeout) {
     snprintf(errbuf, errlen, "No output detected for %d seconds",
              timeout);
-    return SPAWN_TEMPORARY_FAIL;
+    return DOOZER_TEMPORARY_FAIL;
   }
 
   if(err)
@@ -201,15 +202,15 @@ spawn(int (*exec_cb)(void *opaque),
 #ifdef WCOREDUMP
     if(WCOREDUMP(status)) {
       snprintf(errbuf, errlen, "Core dumped");
-      return SPAWN_TEMPORARY_FAIL;
+      return DOOZER_TEMPORARY_FAIL;
     }
 #endif
     snprintf(errbuf, errlen,
              "Terminated by signal %d", WTERMSIG(status));
-    return SPAWN_TEMPORARY_FAIL;
+    return DOOZER_TEMPORARY_FAIL;
   }
   snprintf(errbuf, errlen,
            "Exited with status code %d", status);
-  return SPAWN_TEMPORARY_FAIL;
+  return DOOZER_TEMPORARY_FAIL;
 }
 

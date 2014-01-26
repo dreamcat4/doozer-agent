@@ -135,8 +135,9 @@ repo_fetch(git_repository *repo, job_t *j)
 
   git_remote *r;
   if(git_remote_create_inmemory(&r, repo, refspec, j->repourl) < 0) {
-    job_report_temp_fail(j, "GIT: Unable to create in-memory remote");
-    return 1;
+    snprintf(j->errmsg, sizeof(j->errmsg),
+             "GIT: Unable to create in-memory remote");
+    return DOOZER_TEMPORARY_FAIL;
   }
 
   job_report_status(j, "building", "GIT: Fetch from %s", j->repourl);
@@ -154,27 +155,30 @@ repo_fetch(git_repository *repo, job_t *j)
   git_remote_set_autotag(r, GIT_REMOTE_DOWNLOAD_TAGS_AUTO);
 
   if(git_remote_connect(r, GIT_DIRECTION_FETCH) < 0) {
-    job_report_temp_fail(j, "GIT: Unable to connect to %s -- %s",
-                         j->repourl, giterr());
+    snprintf(j->errmsg, sizeof(j->errmsg),
+             "GIT: Unable to connect to %s -- %s",
+             j->repourl, giterr());
     git_remote_free(r);
-    return -1;
+    return DOOZER_TEMPORARY_FAIL;
   }
 
   if(git_remote_download(r) < 0) {
-    job_report_temp_fail(j, "GIT: Unable to download from %s -- %s",
-                         j->repourl, giterr());
+    snprintf(j->errmsg, sizeof(j->errmsg),
+             "GIT: Unable to download from %s -- %s",
+             j->repourl, giterr());
     git_remote_disconnect(r);
     git_remote_free(r);
-    return -1;
+    return DOOZER_TEMPORARY_FAIL;
   }
 
   int err = git_remote_update_tips(r);
   git_remote_disconnect(r);
   git_remote_free(r);
   if(err < 0) {
-    job_report_temp_fail(j, "GIT: Unable to update tips from %s -- %s",
-                         j->repourl, giterr());
-    return -1;
+    snprintf(j->errmsg, sizeof(j->errmsg),
+             "GIT: Unable to update tips from %s -- %s",
+             j->repourl, giterr());
+    return DOOZER_TEMPORARY_FAIL;
   }
 
   job_report_status(j, "building", "GIT: Fetched repo from %s", j->repourl);
@@ -219,9 +223,11 @@ git_checkout_repo(job_t *j)
   git_oid oid;
 
   if(git_oid_fromstr(&oid, j->revision)) {
-    job_report_fail(j, "GIT: Commit %s is invalid -- %s",
-                    j->revision, giterr());
-    return -1;
+
+    snprintf(j->errmsg, sizeof(j->errmsg),
+             "GIT: Commit %s is invalid -- %s",
+             j->revision, giterr());
+    return DOOZER_PERMANENT_FAIL;
   }
 
   if((err = git_repository_open(&repo, j->repodir)) < 0) {
@@ -232,8 +238,9 @@ git_checkout_repo(job_t *j)
   }
 
   if(err) {
-    job_report_status(j, "failed", "GIT: Unable to create GIT repo");
-    return -1;
+    snprintf(j->errmsg, sizeof(j->errmsg),
+             "GIT: Unable to create GIT repo -- %s", giterr());
+    return DOOZER_PERMANENT_FAIL;
   }
 
   // First try to checkout without doing a fetch, maybe it's possible
@@ -241,16 +248,18 @@ git_checkout_repo(job_t *j)
 
   if(repo_checkout(repo, j, &oid)) {
 
-    if(repo_fetch(repo, j)) {
+    if((err = repo_fetch(repo, j)) != 0) {
       git_repository_free(repo);
-      return -1;
+      return err;
     }
 
     if(repo_checkout(repo, j, &oid)) {
-      job_report_temp_fail(j, "GIT: Failed to checkout %s -- %s",
-                        j->revision, giterr());
+
+      snprintf(j->errmsg, sizeof(j->errmsg),
+               "GIT: Failed to checkout %s -- %s",
+               j->revision, giterr());
       git_repository_free(repo);
-      return -1;
+      return DOOZER_TEMPORARY_FAIL;
     }
   }
   git_repository_free(repo);

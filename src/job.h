@@ -2,8 +2,10 @@
 
 #include <pthread.h>
 #include <sys/queue.h>
+
 #include "agent.h"
 #include "spawn.h"
+#include "libsvc/htsbuf.h"
 
 struct htsmsg;
 
@@ -21,6 +23,10 @@ typedef struct job {
 
   int jobid;
   int can_temp_fail;
+
+  htsbuf_queue_t buildlog;
+  char errmsg[1024];
+
   const char *jobsecret;
   const char *repourl;
   const char *project;
@@ -56,14 +62,6 @@ typedef struct job {
 void job_report_status(job_t *j, const char *status, const char *fmt, ...)
   __attribute__ ((format (printf, 3, 4)));
 
-void job_report_fail(job_t *j, const char *fmt, ...)
-  __attribute__ ((format (printf, 2, 3)));
-
-void job_report_temp_fail(job_t *j, const char *fmt, ...)
-  __attribute__ ((format (printf, 2, 3)));
-
 void job_process(buildmaster_t *bm, struct htsmsg *msg);
 
-int job_run_command(job_t *j, const char *argv[],
-                    struct htsbuf_queue *output,
-                    int flags, char *errbuf, size_t errlen);
+int job_run_command(job_t *j, const char *argv[], int flags);

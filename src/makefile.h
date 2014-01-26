@@ -2,4 +2,4 @@
 
 struct job;
 
-void makefile_process(struct job *j);
+int makefile_process(struct job *j);

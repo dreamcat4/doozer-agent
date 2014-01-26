@@ -1,4 +1,4 @@
 #pragma once
 
 struct job;
-void autobuild_process(struct job *j);
+int autobuild_process(struct job *j);

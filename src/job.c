@@ -84,7 +84,7 @@ job_report_status(job_t *j, const char *status0, const char *fmt, ...)
 /**
  *
  */
-void
+static void
 job_report_fail(job_t *j, const char *fmt, ...)
 {
   va_list ap;
@@ -97,7 +97,7 @@ job_report_fail(job_t *j, const char *fmt, ...)
 /**
  *
  */
-void
+static void
 job_report_temp_fail(job_t *j, const char *fmt, ...)
 {
   va_list ap;
@@ -128,7 +128,7 @@ intercept_doozer_artifact(job_t *j, const char *a, int gzipped,
   char *argv[4];
   if(str_tokenize(line, argv, 4, ':') != 4) {
     snprintf(errbuf, errlen, "Invalid doozer-artifact line");
-    return SPAWN_PERMANENT_FAIL;
+    return DOOZER_PERMANENT_FAIL;
   }
 
   const char *localpath   = argv[0];
@@ -159,7 +159,7 @@ intercept_doozer_artifact(job_t *j, const char *a, int gzipped,
 
   if(artifact_add_file(j, filetype, newfilename, contenttype,
                        localpath, gzipped, errbuf, errlen))
-    return SPAWN_PERMANENT_FAIL;
+    return DOOZER_PERMANENT_FAIL;
   return 0;
 }
 
@@ -231,9 +231,7 @@ job_run_command_spawn(void *opaque)
  *
  */
 int
-job_run_command(job_t *j, const char **argv,
-                struct htsbuf_queue *output,
-                int flags, char *errbuf, size_t errlen)
+job_run_command(job_t *j, const char **argv, int flags)
 {
   job_run_command_aux_t aux;
   aux.job = j;
@@ -250,8 +248,8 @@ job_run_command(job_t *j, const char **argv,
 
   return spawn(job_run_command_spawn,
                job_run_command_line_intercept,
-               &aux, output, 600, flags,
-               errbuf, errlen);
+               &aux, &j->buildlog, 600, flags,
+               j->errmsg, sizeof(j->errmsg));
 }
 
 
@@ -277,7 +275,52 @@ job_mkdir(job_t *j, char path[PATH_MAX], const char *fmt, ...)
 }
 
 
+/**
+ *
+ */
+static int
+job_run(job_t *j)
+{
+  // Checkout from GIT
+  int r;
 
+  if((r = git_checkout_repo(j)) != 0)
+    return r;
+
+  // Check if we should use Autobuild.sh
+
+  char autobuild[PATH_MAX];
+  snprintf(autobuild, sizeof(autobuild), "%s/Autobuild.sh", j->repodir);
+
+  if(!access(autobuild, X_OK)) {
+    j->autobuild = autobuild;
+    job_report_status(j, "building", "Building using Autobuild.sh");
+
+    return autobuild_process(j);
+  }
+
+
+  char doozerctrl[PATH_MAX];
+  snprintf(doozerctrl, sizeof(doozerctrl), "%s/.doozer.json", j->repodir);
+  if(!access(doozerctrl, R_OK)) {
+    j->doozerctrl = doozerctrl;
+    job_report_status(j, "building", "Building using .doozer.json");
+
+    return doozerctrl_process(j);
+  }
+
+  char makefile[PATH_MAX];
+  snprintf(makefile, sizeof(makefile), "%s/Makefile", j->repodir);
+  if(!access(makefile, R_OK)) {
+    j->makefile = makefile;
+    job_report_status(j, "building", "Building using Makefile");
+
+    return makefile_process(j);
+  }
+
+  snprintf(j->errmsg, sizeof(j->errmsg), "No clue how to build from this repo");
+  return DOOZER_PERMANENT_FAIL;
+}
 
 
 /**
@@ -286,7 +329,7 @@ job_mkdir(job_t *j, char path[PATH_MAX], const char *fmt, ...)
 void
 job_process(buildmaster_t *bm, htsmsg_t *msg)
 {
-  job_t j;
+  job_t j = {};
   j.bm = bm;
 
 
@@ -342,15 +385,14 @@ job_process(buildmaster_t *bm, htsmsg_t *msg)
 
   // Create project heap
 
-  char errbuf[512];
   char heapdir[PATH_MAX];
   int r = projects_heap_mgr->open_heap(projects_heap_mgr,
                                        j.project,
                                        heapdir,
-                                       errbuf, sizeof(errbuf), 1);
+                                       j.errmsg, sizeof(j.errmsg), 1);
 
   if(r) {
-    job_report_fail(&j, "%s", errbuf);
+    job_report_fail(&j, "%s", j.errmsg);
     return;
   }
   j.projectdir = heapdir;
@@ -365,53 +407,41 @@ job_process(buildmaster_t *bm, htsmsg_t *msg)
     return;
   j.workdir = repodir;
 
-
-  // Checkout from GIT
-
-  if(git_checkout_repo(&j))
-    return;
-
-
   LIST_INIT(&j.artifacts);
   pthread_cond_init(&j.artifact_cond, NULL);
+  htsbuf_queue_init2(&j.buildlog, 100000);
 
-  // Check if we should use Autobuild.sh
+  int err = job_run(&j);
 
-  char autobuild[PATH_MAX];
-  snprintf(autobuild, sizeof(autobuild), "%s/Autobuild.sh", j.repodir);
-
-  if(!access(autobuild, X_OK)) {
-    j.autobuild = autobuild;
-    job_report_status(&j, "building", "Building using Autobuild.sh");
-
-    autobuild_process(&j);
-    goto done;
+  if(j.buildlog.hq_size) {
+    if(artifact_add_htsbuf(&j, "buildlog", "buildlog",
+                           NULL, &j.buildlog, 1)) {
+      job_report_temp_fail(&j, "Unable to send buildlog");
+      goto cleanup;
+    }
   }
 
+  if(artifacts_wait(&j))
+    err = DOOZER_PERMANENT_FAIL;
 
-  char doozerctrl[PATH_MAX];
-  snprintf(doozerctrl, sizeof(doozerctrl), "%s/.doozer.json", j.repodir);
-  if(!access(doozerctrl, R_OK)) {
-    j.doozerctrl = doozerctrl;
-    job_report_status(&j, "building", "Building using .doozer.json");
-
-    doozerctrl_process(&j);
-    goto done;
+  switch(err) {
+  case DOOZER_TEMPORARY_FAIL:
+    job_report_temp_fail(&j, "%s",
+                         *j.errmsg ? j.errmsg : "No specific message");
+    break;
+  case DOOZER_PERMANENT_FAIL:
+    job_report_fail(&j, "%s",
+                    *j.errmsg ? j.errmsg : "No specific message");
+    break;
+  case 0:
+    job_report_status(&j, "done", "Build done");
+    break;
+  default:
+    job_report_fail(&j, "Exited with status %d", r);
+    break;
   }
-
-  char makefile[PATH_MAX];
-  snprintf(makefile, sizeof(makefile), "%s/Makefile", j.repodir);
-  if(!access(makefile, R_OK)) {
-    j.makefile = makefile;
-    job_report_status(&j, "building", "Building using Makefile");
-
-    makefile_process(&j);
-    goto done;
-  }
-
-  job_report_fail(&j, "No clue how to build from this repo");
- done:
+ cleanup:
+  htsbuf_queue_flush(&j.buildlog);
   pthread_cond_destroy(&j.artifact_cond);
   assert(LIST_FIRST(&j.artifacts) == NULL);
-
 }

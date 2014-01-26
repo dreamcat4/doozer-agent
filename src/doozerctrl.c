@@ -22,9 +22,9 @@
 /**
  *
  */
-void
+int
 doozerctrl_process(job_t *j)
 {
-
+  return 0;
 }
 
