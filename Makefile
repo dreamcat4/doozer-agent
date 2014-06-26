@@ -40,6 +40,8 @@ ifeq ($(shell uname),Linux)
 SRCS +=	src/heap_btrfs.c
 endif
 
+LDFLAGS += -lz
+
 install: ${PROG}
 	install -D ${PROG} "${prefix}/bin/doozeragent"
 uninstall:
