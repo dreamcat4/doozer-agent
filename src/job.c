@@ -437,7 +437,7 @@ job_process(buildmaster_t *bm, htsmsg_t *msg)
     job_report_status(&j, "done", "Build done");
     break;
   default:
-    job_report_fail(&j, "Exited with status %d", r);
+    job_report_fail(&j, "Exited with status %d", err);
     break;
   }
  cleanup:
