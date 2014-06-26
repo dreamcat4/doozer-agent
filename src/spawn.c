@@ -119,17 +119,16 @@ spawn(int (*exec_cb)(void *opaque),
       break;
     }
 
-    if(fds[0].revents & (POLLHUP | POLLERR))
-      break;
-    if(fds[1].revents & (POLLHUP | POLLERR))
-      break;
-
     if(fds[0].revents & POLLIN) {
       r = read(fds[0].fd, buf, sizeof(buf));
       q = &stdout_q;
     } else if(fds[1].revents & POLLIN) {
       r = read(fds[1].fd, buf, sizeof(buf));
       q = &stderr_q;
+    } else if(fds[0].revents & (POLLHUP | POLLERR)) {
+      break;
+    } else if(fds[1].revents & (POLLHUP | POLLERR)) {
+      break;
     } else {
       printf("POLL WAT\n");
       sleep(1);
