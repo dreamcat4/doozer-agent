@@ -28,6 +28,9 @@
 #include "autobuild.h"
 #include "doozerctrl.h"
 #include "makefile.h"
+#include "buildenv.h"
+
+#include <sys/mount.h>
 
 
 /**
@@ -114,6 +117,7 @@ job_report_temp_fail(job_t *j, const char *fmt, ...)
 typedef struct job_run_command_aux {
   job_t *job;
   const char **argv;
+  int flags;
 } job_run_command_aux_t;
 
 
@@ -136,12 +140,22 @@ intercept_doozer_artifact(job_t *j, const char *a, int gzipped,
   const char *contenttype = argv[2];
   const char *filename    = argv[3];
 
+  char newpath[PATH_MAX];
+
   if(localpath[0] == '/') {
 
+    if(!strncmp(localpath, j->projectdir_internal,
+                strlen(j->projectdir_internal))) {
+
+      const char *x = localpath + strlen(j->projectdir_internal);
+      snprintf(newpath, sizeof(newpath), "%s%s",
+               j->projectdir_external, x);
+      localpath = newpath;
+    }
+
   } else {
-    char newpath[PATH_MAX];
-    snprintf(newpath, sizeof(newpath), "%s/%s",
-             j->repodir, localpath);
+    snprintf(newpath, sizeof(newpath), "%s/checkout/repo/%s",
+             j->projectdir_external, localpath);
     localpath = newpath;
   }
 
@@ -193,17 +207,59 @@ job_run_command_spawn(void *opaque)
 {
   job_run_command_aux_t *aux = opaque;
   job_t *j = aux->job;
+  char path[PATH_MAX];
 
-  if(chdir(j->repodir)) {
+  if(j->buildenvdir != NULL) {
+
+
+    linux_cap_change(1, CAP_SYS_ADMIN, -1);
+
+    snprintf(path, sizeof(path), "%s/project", j->buildenvdir);
+    if(mount(j->projectdir_external, path, "bind", MS_BIND, "")) {
+      fprintf(stderr, "Unable to bind mount %s on %s -- %s\n",
+              j->projectdir_external, path, strerror(errno));
+      return 1;
+    }
+
+    snprintf(path, sizeof(path), "%s/tmp", j->buildenvdir);
+    if(mount("tmpfs", path, "tmpfs", 0, "")) {
+      fprintf(stderr, "Unable to mount tmpfs on %s -- %s\n",
+              path, strerror(errno));
+      return 1;
+    }
+
+    snprintf(path, sizeof(path), "%s/var/tmp", j->buildenvdir);
+    if(mount("tmpfs", path, "tmpfs", 0, "")) {
+      fprintf(stderr, "Unable to mount tmpfs on %s -- %s\n",
+              path, strerror(errno));
+      return 1;
+    }
+
+    linux_cap_change(0, CAP_SYS_ADMIN, -1);
+
+
+    linux_cap_change(1, CAP_SYS_CHROOT, -1);
+    if(chroot(j->buildenvdir)) {
+      fprintf(stderr, "Unable to chroot to %s -- %s\n",
+              j->buildenvdir, strerror(errno));
+      return 1;
+    }
+    linux_cap_change(0, CAP_SYS_CHROOT, -1);
+    j->buildenvdir = NULL;
+  }
+
+  snprintf(path, sizeof(path), "%s/repo/checkout", j->projectdir_internal);
+  if(chdir(path)) {
     fprintf(stderr, "Unable to chdir to %s -- %s\n",
-            j->repodir, strerror(errno));
+            path, strerror(errno));
     return 1;
   }
 
-  if(build_uid != -1) {
-    // Should switch UID
+  const int as_root = aux->flags & JOB_RUN_AS_ROOT;
 
-    // First, go back to root
+  if(build_uid != -1 || as_root) {
+
+    // Become root
 
     if(setuid(0)) {
       fprintf(stderr, "Unable to setuid(0) -- %s\n",
@@ -211,16 +267,32 @@ job_run_command_spawn(void *opaque)
       return 1;
     }
 
-    // Then setuid to build_uid
 
-    if(setuid(build_uid)) {
-      fprintf(stderr, "Unable to setuid(%d) -- %s\n",
-              build_uid, strerror(errno));
-      return 1;
+    if(!as_root) {
+      // Then setuid to build_uid
+
+      if(setuid(build_uid)) {
+        fprintf(stderr, "Unable to setuid(%d) -- %s\n",
+                build_uid, strerror(errno));
+        return 1;
+      }
     }
   }
 
-  execv(aux->argv[0], (void *)aux->argv);
+  char homevar[PATH_MAX];
+  snprintf(homevar, sizeof(homevar), "HOME=%s/home", j->projectdir_internal);
+
+  const char *envp[] = {
+    homevar,
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "TZ=UTC0",
+    "USER=nobody",
+    "LOGNAME=nobody",
+    "LANG=C",
+    NULL
+  };
+
+  execve(aux->argv[0], (void *)aux->argv, (void *)envp);
   fprintf(stderr, "Unable to execute %s -- %s\n",
           aux->argv[0], strerror(errno));
   return 127;
@@ -236,6 +308,7 @@ job_run_command(job_t *j, const char **argv, int flags)
   job_run_command_aux_t aux;
   aux.job = j;
   aux.argv = argv;
+  aux.flags = flags;
 
   char cmdline[1024];
   int l = 0;
@@ -246,9 +319,12 @@ job_run_command(job_t *j, const char **argv, int flags)
 
   job_report_status(j, "building", "Running: %s", cmdline);
 
+  int spawn_flags = 0;
+
+
   return spawn(job_run_command_spawn,
                job_run_command_line_intercept,
-               &aux, &j->buildlog, 600, flags,
+               &aux, &j->buildlog, 600, spawn_flags,
                j->errmsg, sizeof(j->errmsg));
 }
 
@@ -257,10 +333,11 @@ job_run_command(job_t *j, const char **argv, int flags)
  *
  */
 static int
-job_mkdir(job_t *j, char path[PATH_MAX], const char *fmt, ...)
+job_mkdir(job_t *j,  const char *fmt, ...)
 {
   va_list ap;
-  int l = snprintf(path, PATH_MAX, "%s/", j->projectdir);
+  char path[PATH_MAX];
+  int l = snprintf(path, PATH_MAX, "%s/", j->projectdir_external);
 
   va_start(ap, fmt);
   vsnprintf(path + l, PATH_MAX - l, fmt, ap);
@@ -279,47 +356,120 @@ job_mkdir(job_t *j, char path[PATH_MAX], const char *fmt, ...)
  *
  */
 static int
+job_probe_build(job_t *j)
+{
+  if(!autobuild_probe(j))
+    return 0;
+
+  snprintf(j->errmsg, sizeof(j->errmsg),
+           "No clue how to build from this repo");
+  return DOOZER_PERMANENT_FAIL;
+}
+
+
+
+/**
+ *
+ */
+static int
 job_run(job_t *j)
 {
-  // Checkout from GIT
   int r;
+  char buildenv_root[PATH_MAX];
 
+  // Checkout from GIT
   if((r = git_checkout_repo(j)) != 0)
     return r;
 
-  // Check if we should use Autobuild.sh
+  j->projectdir_internal = "/project";
 
-  char autobuild[PATH_MAX];
-  snprintf(autobuild, sizeof(autobuild), "%s/Autobuild.sh", j->repodir);
+  // Figure out which build strategy to use
 
-  if(!access(autobuild, X_OK)) {
-    j->autobuild = autobuild;
-    job_report_status(j, "building", "Building using Autobuild.sh");
+  if((r = job_probe_build(j)) != 0)
+    return r;
 
-    return autobuild_process(j);
+  const char *buildenv_base_id = "base1-precise-amd64";
+
+  if(buildenv_install(j, buildenv_base_id,
+                      "/home/andoma/doozerlab/precise-amd64.tar.xz"))
+    return DOOZER_PERMANENT_FAIL;
+
+
+  if(j->query_env != NULL) {
+
+    // Need to run stuff to figure out what build environment to use
+    // We do this in a snapshot of the base buildenv
+
+    // First we need to have a base buildenv
+
+    r = buildenv_heap_mgr->clone_heap(buildenv_heap_mgr,
+                                      buildenv_base_id,
+                                      "current", buildenv_root,
+                                      j->errmsg, sizeof(j->errmsg));
+    if(r)
+      return DOOZER_PERMANENT_FAIL;
+
+    j->buildenvdir = buildenv_root;
+    r = j->query_env(j);
+
+    if(r) {
+      buildenv_heap_mgr->delete_heap(buildenv_heap_mgr, "current");
+      return r;
+    }
+
+    if(j->modified_buildenv[0]) {
+
+      buildenv_heap_mgr->delete_heap(buildenv_heap_mgr, "current");
+
+      char buildenv_modified_id[512];
+
+      snprintf(buildenv_modified_id, sizeof(buildenv_modified_id),
+               "project1-%s-%s-%s-%s",
+               j->project, j->target, j->modified_buildenv,
+               buildenv_base_id);
+
+      r = buildenv_heap_mgr->open_heap(buildenv_heap_mgr,
+                                       buildenv_modified_id,
+                                       buildenv_root,
+                                       j->errmsg, sizeof(j->errmsg), 0);
+      if(r < 0) {
+        r = buildenv_heap_mgr->clone_heap(buildenv_heap_mgr,
+                                          buildenv_base_id,
+                                          buildenv_modified_id, buildenv_root,
+                                          j->errmsg, sizeof(j->errmsg));
+
+
+        j->buildenvdir = buildenv_root;
+        r = j->prep_env(j);
+
+        if(r) {
+          buildenv_heap_mgr->delete_heap(buildenv_heap_mgr,
+                                         buildenv_modified_id);
+          return r;
+        }
+      }
+
+
+      r = buildenv_heap_mgr->clone_heap(buildenv_heap_mgr,
+                                        buildenv_modified_id,
+                                        "current",
+                                        buildenv_root,
+                                        j->errmsg, sizeof(j->errmsg));
+
+      j->buildenvdir = buildenv_root;
+
+    } else {
+
+      j->buildenvdir = buildenv_root;
+
+      // No way to get buildenv id, just build in current
+      r = j->prep_env(j);
+
+    }
   }
 
-
-  char doozerctrl[PATH_MAX];
-  snprintf(doozerctrl, sizeof(doozerctrl), "%s/.doozer.json", j->repodir);
-  if(!access(doozerctrl, R_OK)) {
-    j->doozerctrl = doozerctrl;
-    job_report_status(j, "building", "Building using .doozer.json");
-
-    return doozerctrl_process(j);
-  }
-
-  char makefile[PATH_MAX];
-  snprintf(makefile, sizeof(makefile), "%s/Makefile", j->repodir);
-  if(!access(makefile, R_OK)) {
-    j->makefile = makefile;
-    job_report_status(j, "building", "Building using Makefile");
-
-    return makefile_process(j);
-  }
-
-  snprintf(j->errmsg, sizeof(j->errmsg), "No clue how to build from this repo");
-  return DOOZER_PERMANENT_FAIL;
+  r = j->build(j);
+  return r;
 }
 
 
@@ -382,30 +532,29 @@ job_process(buildmaster_t *bm, htsmsg_t *msg)
     return;
   }
 
-
   // Create project heap
 
   char heapdir[PATH_MAX];
-  int r = projects_heap_mgr->open_heap(projects_heap_mgr,
-                                       j.project,
-                                       heapdir,
-                                       j.errmsg, sizeof(j.errmsg), 1);
+  int r = project_heap_mgr->open_heap(project_heap_mgr,
+                                      j.project,
+                                      heapdir,
+                                      j.errmsg, sizeof(j.errmsg), 1);
 
-  if(r) {
+  if(r < 0) {
     job_report_fail(&j, "%s", j.errmsg);
     return;
   }
-  j.projectdir = heapdir;
+  j.projectdir_internal = heapdir;
+  j.projectdir_external = heapdir;
 
-  char repodir[PATH_MAX];
-  if(job_mkdir(&j, repodir, "checkout/repo"))
+  if(job_mkdir(&j, "checkout/repo"))
     return;
-  j.repodir = repodir;
 
-  char workdir[PATH_MAX];
-  if(job_mkdir(&j, workdir, "workdir"))
+  if(job_mkdir(&j, "workdir"))
     return;
-  j.workdir = repodir;
+
+  if(job_mkdir(&j, "home"))
+    return;
 
   LIST_INIT(&j.artifacts);
   pthread_cond_init(&j.artifact_cond, NULL);

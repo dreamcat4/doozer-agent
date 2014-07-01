@@ -35,9 +35,12 @@ SRCS =  src/main.c \
 	src/spawn.c \
 	src/heap_simple.c \
 
-
 ifeq ($(shell uname),Linux)
-SRCS +=	src/heap_btrfs.c
+SRCS +=	src/heap_btrfs.c \
+	src/buildenv.c
+
+LDFLAGS += -larchive
+
 endif
 
 LDFLAGS += -lz

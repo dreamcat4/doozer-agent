@@ -34,29 +34,31 @@ typedef struct job {
   const char *revision;
   const char *target;
 
-  // Various filesystem paths (outside any chroot, etc)
+  // Various filesystem paths
 
-  const char *projectdir;
-  const char *repodir;
-  const char *workdir;
+  const char *projectdir_internal;
+  const char *projectdir_external;
+
+  //  const char *repodir;
+  //  const char *workdir;
+  //  const char *homedir;
 
   // For autobuild mode
-
-  const char *autobuild;
   int autobuild_version;
 
-  // For doozerctrl mode
+  // Build environment
+  const char *buildenvdir;
 
-  const char *doozerctrl;
+  // ID of buildenv as given by the project
+  char modified_buildenv[512];
 
-  // For raw Makefile mode
+  int (*query_env)(struct job *j);
 
-  const char *makefile;
+  int (*prep_env)(struct job *j);
+
+  int (*build)(struct job *j);
 
 } job_t;
-
-
-
 
 
 void job_report_status(job_t *j, const char *status, const char *fmt, ...)
@@ -65,3 +67,5 @@ void job_report_status(job_t *j, const char *status, const char *fmt, ...)
 void job_process(buildmaster_t *bm, struct htsmsg *msg);
 
 int job_run_command(job_t *j, const char *argv[], int flags);
+
+#define JOB_RUN_AS_ROOT 0x1

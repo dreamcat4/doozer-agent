@@ -3,7 +3,7 @@
 #include <pwd.h>
 #include <grp.h>
 
-extern struct heapmgr *projects_heap_mgr;
+extern struct heapmgr *project_heap_mgr;
 extern struct heapmgr *buildenv_heap_mgr;
 extern int build_uid;
 extern int build_gid;
@@ -29,3 +29,15 @@ void agent_init(void);
 
 char *call_buildmaster(buildmaster_t *bm, const char *path, ...);
 
+
+#ifdef linux
+
+#include <linux/capability.h>
+
+void linux_cap_print(void);
+
+void linux_cap_change(int on, ...);
+
+#define UIDGID_OFFSET 10000
+
+#endif

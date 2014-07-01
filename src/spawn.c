@@ -1,3 +1,9 @@
+#ifdef linux
+#define _GNU_SOURCE
+#include <sched.h>
+#endif
+
+
 #include <sys/mman.h>
 #include <sys/param.h>
 #include <sys/wait.h>
@@ -26,6 +32,104 @@
 #include "agent.h"
 
 
+#ifdef linux
+#define SPAWN_NEW_USER
+#endif
+
+
+typedef struct args {
+  int pipe_stdout[2];
+  int pipe_stderr[2];
+  void *opaque;
+  int (*exec_cb)(void *opaque);
+
+#ifdef SPAWN_NEW_USER
+  int pipe_setup[2];
+  int newuser;
+#endif
+
+
+} args_t;
+
+
+/**
+ *
+ */
+static int
+child(void *A)
+{
+  args_t *a = A;
+
+#ifdef SPAWN_NEW_USER
+  if(a->newuser) {
+    char ch;
+    close(a->pipe_setup[1]);
+    if(read(a->pipe_setup[0], &ch, 1) != 0) {
+      fprintf(stderr, "read from setup_pipe returned != 0\n");
+      return 1;
+    }
+    close(a->pipe_setup[0]);
+  }
+#endif
+
+
+  // Close read ends of pipe
+  close(a->pipe_stdout[0]);
+  close(a->pipe_stderr[0]);
+
+  // Let stdin read from /dev/null
+  int devnull = open("/dev/null", O_RDONLY);
+  if(devnull != -1) {
+    dup2(devnull, 0);
+    close(devnull);
+  }
+
+  // Flush output buffered IO
+  fflush(stdout);
+  fflush(stderr);
+
+  // Switch stdout/stderr to our pipes
+  dup2(a->pipe_stdout[1], 1);
+  dup2(a->pipe_stderr[1], 2);
+  close(a->pipe_stdout[1]);
+  close(a->pipe_stderr[1]);
+
+  return a->exec_cb(a->opaque);
+}
+
+
+#ifdef SPAWN_NEW_USER
+static int
+update_map(const char *path, const char *mapping)
+{
+  linux_cap_change(1, CAP_SETUID, CAP_SETGID, CAP_DAC_OVERRIDE, -1);
+
+  int rval = 0;
+
+  int fd = open(path, O_RDWR);
+  if(fd == -1) {
+    rval = -1;
+  } else {
+
+    if(write(fd, mapping, strlen(mapping)) != strlen(mapping)) {
+      trace(LOG_ERR, "Unable to update UIDGID mapping %s in %s -- %s",
+            mapping, path, strerror(errno));
+      rval = -1;
+    }
+
+    if(close(fd)) {
+      trace(LOG_ERR, "Unable to update UIDGID mapping %s in %s -- %s",
+            mapping, path, strerror(errno));
+      rval = -1;
+    }
+  }
+
+  linux_cap_change(0, CAP_SETUID, CAP_SETGID, CAP_DAC_OVERRIDE, -1);
+  return rval;
+}
+#endif
+
+
 /**
  *
  */
@@ -37,65 +141,129 @@ spawn(int (*exec_cb)(void *opaque),
       htsbuf_queue_t *output, int timeout, int flags,
       char *errbuf, size_t errlen)
 {
-  int pipe_stdout[2];
-  int pipe_stderr[2];
+  pid_t pid;
+  int forkerr;
+
+  args_t *a = malloc(sizeof(args_t));
+  a->exec_cb = exec_cb;
+  a->opaque = opaque;
+
   const int print_to_stdout = isatty(1);
 
-  if(pipe(pipe_stdout) || pipe(pipe_stderr)) {
-    snprintf(errbuf, errlen, "Unable to create pipe -- %s",
+  if(pipe(a->pipe_stdout)) {
+    snprintf(errbuf, errlen, "Unable to create stdout pipe -- %s",
              strerror(errno));
+    free(a);
     return DOOZER_TEMPORARY_FAIL;
   }
 
-  pid_t pid = fork();
-
-  if(pid == -1) {
-    close(pipe_stdout[0]);
-    close(pipe_stdout[1]);
-    close(pipe_stderr[0]);
-    close(pipe_stderr[1]);
-    snprintf(errbuf, errlen, "Unable to fork -- %s",
+  if(pipe(a->pipe_stderr)) {
+    snprintf(errbuf, errlen, "Unable to create stderr pipe -- %s",
              strerror(errno));
+    close(a->pipe_stdout[0]);
+    close(a->pipe_stdout[1]);
+    free(a);
     return DOOZER_TEMPORARY_FAIL;
   }
+
+#ifdef SPAWN_NEW_USER
+
+  a->newuser = 1;
+
+  int clone_flags = SIGCHLD;
+  if(a->newuser)
+    clone_flags |=
+      CLONE_NEWUSER | CLONE_NEWIPC | CLONE_NEWUTS | CLONE_NEWNS;
+
+  if(a->newuser) {
+
+    if(pipe(a->pipe_setup)) {
+      snprintf(errbuf, errlen, "Unable to create setup pipe -- %s",
+               strerror(errno));
+      close(a->pipe_stdout[0]);
+      close(a->pipe_stdout[1]);
+      close(a->pipe_stderr[0]);
+      close(a->pipe_stderr[1]);
+      free(a);
+      return DOOZER_TEMPORARY_FAIL;
+    }
+  }
+
+  size_t initial_stacksize = 1024 * 1024;
+  void *stack = mmap(NULL, initial_stacksize, PROT_WRITE | PROT_READ,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+  pid = clone(child, stack + initial_stacksize, clone_flags, a);
+
+  forkerr = errno;
+  munmap(stack, initial_stacksize);
+#else
+  pid = fork();
+  forkerr = errno;
 
   if(pid == 0) {
-    // Close read ends of pipe
-    close(pipe_stdout[0]);
-    close(pipe_stderr[0]);
-
-    // Let stdin read from /dev/null
-    int devnull = open("/dev/null", O_RDONLY);
-    if(devnull != -1) {
-      dup2(devnull, 0);
-      close(devnull);
-    }
-
-    // Flush output buffered IO
-    fflush(stdout);
-    fflush(stderr);
-
-    // Switch stdout/stderr to our pipes
-    dup2(pipe_stdout[1], 1);
-    dup2(pipe_stderr[1], 2);
-    close(pipe_stdout[1]);
-    close(pipe_stderr[1]);
-
-    int r = exec_cb(opaque);
+    int r = child(a);
     exit(r);
+  }
+#endif
+
+  if(pid == -1) {
+    close(a->pipe_stdout[0]);
+    close(a->pipe_stdout[1]);
+    close(a->pipe_stderr[0]);
+    close(a->pipe_stderr[1]);
+#ifdef SPAWN_NEW_USER
+    if(a->newuser) {
+      close(a->pipe_setup[0]);
+      close(a->pipe_setup[1]);
+    }
+#endif
+    snprintf(errbuf, errlen, "Unable to fork -- %s",
+             strerror(forkerr));
+    free(a);
+    return DOOZER_TEMPORARY_FAIL;
   }
 
   // Close write ends of pipe
-  close(pipe_stdout[1]);
-  close(pipe_stderr[1]);
+  close(a->pipe_stdout[1]);
+  close(a->pipe_stderr[1]);
+
+#ifdef SPAWN_NEW_USER
+
+  if(a->newuser) {
+
+    char map_path[PATH_MAX];
+    char mapping[128];
+
+    assert(build_uid != -1);
+    assert(build_gid != -1);
+
+    snprintf(mapping, sizeof(mapping), "%d %d %d\n%d %d %d\n",
+             0, UIDGID_OFFSET, 1000,
+             build_uid, build_uid, 1);
+    snprintf(map_path, PATH_MAX, "/proc/%ld/uid_map", (long)pid);
+    update_map(map_path, mapping);
+
+    snprintf(mapping, sizeof(mapping), "%d %d %d\n%d %d %d\n",
+             0, UIDGID_OFFSET, 1000,
+             build_gid, build_gid, 1);
+    snprintf(map_path, PATH_MAX, "/proc/%ld/gid_map", (long)pid);
+    update_map(map_path, mapping);
+
+    // Clone setup pipe to tell child it can continue with exec()
+    close(a->pipe_setup[1]);
+    close(a->pipe_setup[0]);
+  }
+#endif
+
 
   struct pollfd fds[2] = {
     {
-      .fd = pipe_stdout[0],
+      .fd = a->pipe_stdout[0],
       .events = POLLIN | POLLHUP | POLLERR,
     }, {
 
-      .fd = pipe_stderr[0],
+      .fd = a->pipe_stderr[0],
       .events = POLLIN | POLLHUP | POLLERR,
     }
   };
@@ -175,6 +343,11 @@ spawn(int (*exec_cb)(void *opaque),
         free(line);
     }
   }
+
+  // Close read ends of pipe
+  close(a->pipe_stdout[0]);
+  close(a->pipe_stderr[0]);
+  free(a);
 
   if(got_timeout || err)
     kill(pid, SIGKILL);

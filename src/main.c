@@ -29,7 +29,7 @@
 #include "heap.h"
 
 
-struct heapmgr *projects_heap_mgr;
+struct heapmgr *project_heap_mgr;
 struct heapmgr *buildenv_heap_mgr;
 int build_uid = -1;
 int build_gid = -1;
@@ -75,28 +75,46 @@ get_uid_gid(void)
 {
   cfg_root(root);
 
-  const char *user  = cfg_get_str(root, CFG("user"),  NULL);
-  const char *group = cfg_get_str(root, CFG("group"), NULL);
+  const char *user  = cfg_get_str(root, CFG("user"),  "nobody");
+  const char *group = cfg_get_str(root, CFG("group"), "nogroup");
 
-  if(user != NULL) {
-    const struct passwd *p = getpwnam(user);
-    if(p == NULL) {
-      trace(LOG_ERR, "Unable to find UID for user %s. Exiting", user);
-      exit(1);
-    }
-    build_uid = p->pw_uid;
+  const struct passwd *p = getpwnam(user);
+  if(p == NULL) {
+    trace(LOG_ERR, "Unable to find UID for user %s. Exiting", user);
+    exit(1);
   }
+  build_uid = p->pw_uid;
 
-  if(group != NULL) {
-    const struct group *g = getgrnam(group);
-
-    if(g == NULL) {
-      trace(LOG_ERR, "Unable to find GID for group %s. Exiting", group);
-      exit(1);
-    }
-    build_gid = g->gr_gid;
+  const struct group *g = getgrnam(group);
+  if(g == NULL) {
+    trace(LOG_ERR, "Unable to find GID for group %s. Exiting", group);
+    exit(1);
   }
+  build_gid = g->gr_gid;
 }
+
+
+/**
+ *
+ */
+static heapmgr_t *
+create_heap(const char *path)
+{
+  heapmgr_t *h;
+#ifdef linux
+  h = heap_btrfs_init(path);
+#endif
+
+  if(h == NULL)
+    h = heap_simple_init(path);
+
+  if(h == NULL) {
+    trace(LOG_ERR, "Unable to crate heap at %s. Giving up", path);
+    exit(1);
+  }
+  return h;
+}
+
 
 
 /**
@@ -106,29 +124,131 @@ static void
 create_heaps(void)
 {
   cfg_root(root);
+  const char *d;
 
-  const char *projects_dir = cfg_get_str(root, CFG("projectsdir"), NULL);
-  if(projects_dir == NULL) {
-    trace(LOG_ERR, "No projectsdir configured, giving up");
+  d = cfg_get_str(root, CFG("projectdir"), NULL);
+  if(d == NULL) {
+    trace(LOG_ERR, "No 'projectdir' configured, giving up");
     exit(1);
   }
+  project_heap_mgr = create_heap(d);
+
+  d = cfg_get_str(root, CFG("buildenvdir"), NULL);
+  if(d == NULL) {
+    trace(LOG_ERR, "No 'buildenvdir' configured, giving up");
+    exit(1);
+  }
+  buildenv_heap_mgr = create_heap(d);
+}
 
 
 #ifdef linux
-  projects_heap_mgr = heap_btrfs_init(projects_dir);
+
+#include <sys/syscall.h>
+
+/**
+ *
+ */
+void
+linux_cap_print(void)
+{
+  struct __user_cap_header_struct x;
+  struct __user_cap_data_struct s[3] = {};
+
+  x.version = _LINUX_CAPABILITY_VERSION_3;
+  x.pid = syscall(SYS_gettid);
+
+  if(syscall(SYS_capget, &x, s)) {
+    perror("linux_check_capabilities");
+    return;
+  }
+
+  printf("  effective: %08x %08x %08x\n",
+         s[0].effective, s[1].effective, s[2].effective);
+
+  printf("  permitted: %08x %08x %08x\n",
+         s[0].permitted, s[1].permitted, s[2].permitted);
+
+  printf("inheritable: %08x %08x %08x\n",
+         s[0].inheritable, s[1].inheritable, s[2].inheritable);
+
+}
+
+
+
+/**
+ *
+ */
+void
+linux_cap_change(int on, ...)
+{
+  struct __user_cap_header_struct x;
+  struct __user_cap_data_struct s[3] = {};
+
+  x.version = _LINUX_CAPABILITY_VERSION_3;
+  x.pid = syscall(SYS_gettid);
+
+  if(syscall(SYS_capget, &x, s)) {
+    perror("capget");
+    exit(1);
+  }
+
+  va_list ap;
+  va_start(ap, on);
+
+  int cap;
+  while((cap = va_arg(ap, int)) != -1) {
+
+    if(!cap_valid(cap)) {
+      fprintf(stderr, "cap %d is not valid\n", cap);
+      exit(1);
+    }
+
+    if(on) {
+      s[CAP_TO_INDEX(cap)].effective |= CAP_TO_MASK(cap);
+    } else {
+      s[CAP_TO_INDEX(cap)].effective &= ~CAP_TO_MASK(cap);
+    }
+  }
+
+  if(syscall(SYS_capset, &x, s)) {
+    perror("capset");
+    exit(1);
+  }
+}
 #endif
 
-  if(projects_heap_mgr == NULL)
-    projects_heap_mgr = heap_simple_init(projects_dir);
+#if 0
 
-  if(projects_heap_mgr == NULL) {
+/**
+ *
+ */
+static void
+linux_cap_drop(void)
+{
+  struct __user_cap_header_struct x;
+  struct __user_cap_data_struct s[3] = {};
 
-    trace(LOG_ERR, "No heap manager for projects in %s, giving up",
-          projects_dir);
+  x.version = _LINUX_CAPABILITY_VERSION_3;
+  x.pid = syscall(SYS_gettid);
+
+  if(syscall(SYS_capget, &x, s)) {
+    perror("capget");
+    exit(1);
+  }
+
+  s[0].effective = 0;
+  s[1].effective = 0;
+  s[2].effective = 0;
+
+
+  if(syscall(SYS_capset, &x, s)) {
+    perror("capset");
     exit(1);
   }
 }
 
+#endif
 
 /**
  *
@@ -165,19 +285,18 @@ main(int argc, char **argv)
     exit(1);
   }
 
-  get_uid_gid();
-
   create_heaps();
 
-  if(build_gid != -1) {
+  if(geteuid() == 0) {
+
+    get_uid_gid();
+
     if(setgid(build_gid)) {
       trace(LOG_ERR, "Unable to setgid(%d) -- %s", build_gid,
             strerror(errno));
       exit(1);
     }
-  }
 
-  if(build_uid != -1) {
     if(seteuid(build_uid)) {
       trace(LOG_ERR, "Unable to seteuid(%d) -- %s", build_uid,
             strerror(errno));

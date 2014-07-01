@@ -60,7 +60,7 @@ artifact_process_thread(void *aux)
         a->sha1txt,
         a->md5txt);
 
-
+  a->origsize = a->size;
 
   if(a->gzip) {
     void *out = mmap(NULL, a->size, PROT_READ | PROT_WRITE,
@@ -282,6 +282,7 @@ artifact_send(artifact_t *a)
            "&type=%s"
            "&md5sum=%s"
            "&sha1sum=%s"
+           "&origsize=%d"
            ,
            bm->url,
            j->jobid,
@@ -289,7 +290,8 @@ artifact_send(artifact_t *a)
            a->filename,
            a->type,
            a->md5txt,
-           a->sha1txt);
+           a->sha1txt,
+           (int)a->origsize);
 
   char ctbuf[256];
   snprintf(ctbuf, sizeof(ctbuf), "Content-Type: %s", a->content_type);

@@ -50,7 +50,7 @@ heap_simple_open(struct heapmgr *super, const char *id,
   struct stat st;
   int r = stat(outpath, &st);
   if(r == 0)
-    return 0;
+    return 1;
 
   if(!create) {
     snprintf(errbuf, errlen, "%s does not exist", outpath);
@@ -90,11 +90,13 @@ heap_simple_init(const char *path)
     return NULL;
   }
 
+#if 0
   if(chown(path, build_uid, build_gid)) {
     trace(LOG_WARNING, "heap_simple: Unable to set uid/gid of %s -- %s",
           path, strerror(errno));
     return NULL;
   }
+#endif
 
   heapmgr_simple_t *hm = calloc(1, sizeof(heapmgr_simple_t));
 

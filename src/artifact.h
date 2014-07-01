@@ -19,6 +19,8 @@ typedef struct artifact {
   size_t size;
   size_t mapsize;
 
+  size_t origsize;
+
   off_t fpos;
 
   int result;

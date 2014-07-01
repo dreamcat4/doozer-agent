@@ -1,6 +1,6 @@
 #include <unistd.h>
 #include <stdio.h>
-
+#include <limits.h>
 #include <git2.h>
 
 #include "libsvc/trace.h"
@@ -219,7 +219,7 @@ git_checkout_repo(job_t *j)
 {
   git_repository *repo;
   int err;
-
+  char path[PATH_MAX];
   git_oid oid;
 
   if(git_oid_fromstr(&oid, j->revision)) {
@@ -230,10 +230,12 @@ git_checkout_repo(job_t *j)
     return DOOZER_PERMANENT_FAIL;
   }
 
-  if((err = git_repository_open(&repo, j->repodir)) < 0) {
+  snprintf(path, sizeof(path), "%s/repo/checkout", j->projectdir_external);
+
+  if((err = git_repository_open(&repo, path)) < 0) {
     if(err == GIT_ENOTFOUND) {
-      trace(LOG_INFO, "Creating new GIT repo at %s", j->repodir);
-      err = git_repository_init(&repo, j->repodir, 0);
+      trace(LOG_INFO, "Creating new GIT repo at %s", path);
+      err = git_repository_init(&repo, path, 0);
     }
   }
 

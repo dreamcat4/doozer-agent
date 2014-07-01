@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 
+#include <openssl/sha.h>
+
 #include "libsvc/htsmsg.h"
 #include "libsvc/misc.h"
 #include "libsvc/trace.h"
@@ -25,15 +27,16 @@
 /**
  *
  */
-int
-autobuild_process(job_t *j)
+static int
+autobuild_query_env(job_t *j)
 {
   int r;
-  r = job_run_command(j, (const char *[]){j->autobuild, "-v", NULL}, 0);
+  char line[1024] = {};
+
+  r = job_run_command(j, (const char *[]){"./Autobuild.sh", "-v", NULL}, 0);
   if(r)
     return r;
 
-  char line[64] = {};
 
   htsbuf_read(&j->buildlog, line, sizeof(line) - 1);
   htsbuf_queue_flush(&j->buildlog);
@@ -47,18 +50,82 @@ autobuild_process(job_t *j)
     return DOOZER_PERMANENT_FAIL;
   }
 
+  j->modified_buildenv[0] = 0;
 
   r = job_run_command(j,
-                      (const char *[]){j->autobuild,
-                          "-t", j->target, "-o", "deps", NULL},
+                      (const char *[]){"./Autobuild.sh",
+                          "-t", j->target,
+                          "-o", "buildenv",
+                          NULL},
                       0);
   if(r)
-    return r;
+    return 0;
+
+  htsbuf_read(&j->buildlog, line, sizeof(line) - 1);
+  htsbuf_queue_flush(&j->buildlog);
+
+  uint8_t sha1_digest[20];
+
+  SHA1((void *)line, strlen(line), sha1_digest);
+  bin2hex(j->modified_buildenv, sizeof(j->modified_buildenv),
+          sha1_digest, sizeof(sha1_digest));
+  return 0;
+}
+
+
+/**
+ *
+ */
+static int
+autobuild_prep_env(job_t *j)
+{
+  int r;
 
   r = job_run_command(j,
-                      (const char *[]){j->autobuild,
-                          "-t", j->target, "-o", "build", NULL},
-                      0);
-
+                      (const char *[]){"./Autobuild.sh",
+                          "-t", j->target, "-o", "deps", NULL},
+                      JOB_RUN_AS_ROOT);
   return r;
+}
+
+
+/**
+ *
+ */
+static int
+autobuild_build(job_t *j)
+{
+  int r;
+
+  char workdir[PATH_MAX];
+  snprintf(workdir, sizeof(workdir), "%s/workdir",
+           j->projectdir_internal);
+
+  r = job_run_command(j,
+                      (const char *[]){"./Autobuild.sh",
+                          "-t", j->target,
+                          "-o", "build",
+                          "-w", workdir,
+                          NULL},
+                      0);
+  return r;
+}
+
+
+
+int
+autobuild_probe(job_t *j)
+{
+  char autobuild[PATH_MAX];
+  snprintf(autobuild, sizeof(autobuild),
+           "%s/repo/checkout/Autobuild.sh", j->projectdir_external);
+
+  if(!access(autobuild, X_OK)) {
+
+    j->query_env = autobuild_query_env;
+    j->prep_env  = autobuild_prep_env;
+    j->build     = autobuild_build;
+    return 0;
+  }
+  return 1;
 }

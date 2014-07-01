@@ -178,9 +178,6 @@ agent_run(void)
   bm.agentid = cfg_get_str(root, CFG("buildmaster", "agentid"), NULL);
   bm.secret  = cfg_get_str(root, CFG("buildmaster", "secret"), NULL);
 
-  const char *projects_dir = cfg_get_str(root, CFG("projectsdir"), NULL);
-  //  const char *buildenv_dir = cfg_get_str(root, CFG("buildenvdir"), NULL);
-
   if(bm.url == NULL) {
     trace(LOG_ERR, "Missing configuration buildmaster.url");
     return -1;
@@ -193,16 +190,6 @@ agent_run(void)
 
   if(bm.secret == NULL) {
     trace(LOG_ERR, "Missing configuration buildmaster.secret");
-    return -1;
-  }
-
-  if(projects_dir == NULL) {
-    trace(LOG_ERR, "Missing configuration projectsdir");
-    return -1;
-  }
-
-  if(mkdir(projects_dir, 0777) && errno != EEXIST) {
-    trace(LOG_ERR, "Unable to create %s -- %s", projects_dir, strerror(errno));
     return -1;
   }
 

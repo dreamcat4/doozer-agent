@@ -13,7 +13,7 @@
 
 #include "linux_btrfs.h"
 #include "heap.h"
-
+#include "agent.h"
 
 
 typedef struct heapmgr_btrfs {
@@ -42,34 +42,12 @@ heap_btrfs_dtor(heapmgr_t *super)
  *
  */
 static int
-heap_btrfs_open(struct heapmgr *super, const char *id0,
+heap_btrfs_open(struct heapmgr *super, const char *subvolname,
                 char outpath[PATH_MAX],
                 char *errbuf, size_t errlen, int create)
 {
   heapmgr_btrfs_t *hm = (heapmgr_btrfs_t *)super;
-  const char *parent;
-  char *id = mystrdupa(id0);
-
-  char *p = strrchr(id, '/');
-  const char *subvolname;
-
-  if(p != NULL) {
-    *p = 0;
-    subvolname = p + 1;
-    char tmp[PATH_MAX];
-    snprintf(tmp, sizeof(tmp), "%s/%s", hm->path, id);
-
-    int err = makedirs(tmp);
-    if(err) {
-      snprintf(errbuf, errlen, "Unable to create directory %s -- %s",
-               tmp, strerror(err));
-      return -1;
-    }
-    parent = tmp;
-  } else {
-    parent = hm->path;
-    subvolname = id;
-  }
+  const char *parent = hm->path;
 
   snprintf(outpath, PATH_MAX, "%s/%s", parent, subvolname);
 
@@ -77,7 +55,7 @@ heap_btrfs_open(struct heapmgr *super, const char *id0,
   int r = stat(outpath, &st);
   if(r == 0) {
     if(st.st_ino == 256 && S_ISDIR(st.st_mode))
-      return 0;
+      return 1;
 
     snprintf(errbuf, errlen, "%s exists but is not a Btrfs subvolume",
              outpath);
@@ -116,10 +94,102 @@ heap_btrfs_open(struct heapmgr *super, const char *id0,
  *
  */
 static int
-heap_btrfs_delete(struct heapmgr *hm, const char *name)
+heap_btrfs_delete(struct heapmgr *super, const char *subvolname)
 {
+  heapmgr_btrfs_t *hm = (heapmgr_btrfs_t *)super;
+  const char *parent = hm->path;
+
+
+  int fd = open(parent, O_RDONLY);
+  if(fd == -1) {
+    trace(LOG_ERR, "heap_btrfs: Unable to open parent dir %s -- %s",
+          parent, strerror(errno));
+    return -1;
+  }
+
+  struct btrfs_ioctl_vol_args args = {};
+  snprintf(args.name, BTRFS_SUBVOL_NAME_MAX, "%s", subvolname);
+
+  linux_cap_change(1, CAP_SYS_ADMIN, -1);
+
+  int r = ioctl(fd, BTRFS_IOC_SNAP_DESTROY, &args);
+  int err = errno;
+
+  linux_cap_change(0, CAP_SYS_ADMIN, -1);
+
+  close(fd);
+
+  if(r == 0)
+    return 0;
+
+  trace(LOG_ERR,
+        "heap_btrfs: Unable to destroy Btrfs subvolume %s at %s -- %s",
+        subvolname, parent, strerror(err));
+  return -1;
+}
+
+
+
+/**
+ *
+ */
+static int
+heap_btrfs_clone(struct heapmgr *super, const char *src, const char *dst,
+                 char outpath[PATH_MAX], char *errbuf, size_t errlen)
+{
+  heapmgr_btrfs_t *hm = (heapmgr_btrfs_t *)super;
+  const char *parent = hm->path;
+
+  int fd = open(parent, O_RDONLY);
+  if(fd == -1) {
+    snprintf(errbuf, errlen, "heap_btrfs: Unable to open parent dir %s -- %s",
+             parent, strerror(errno));
+    return -1;
+  }
+
+  // Delete target if it existed previously
+
+  struct btrfs_ioctl_vol_args args = {};
+  snprintf(args.name, BTRFS_SUBVOL_NAME_MAX, "%s", dst);
+
+  linux_cap_change(1, CAP_SYS_ADMIN, -1);
+  ioctl(fd, BTRFS_IOC_SNAP_DESTROY, &args);
+  linux_cap_change(0, CAP_SYS_ADMIN, -1);
+
+
+  char srcpath[PATH_MAX];
+  snprintf(srcpath, sizeof(srcpath), "%s/%s", parent, src);
+
+  int fd_src = open(srcpath, O_RDONLY);
+  if(fd_src == -1) {
+    snprintf(errbuf, errlen, "heap_btrfs: Unable to open source dir %s -- %s",
+             srcpath, strerror(errno));
+    close(fd);
+    return -1;
+  }
+
+  struct btrfs_ioctl_vol_args_v2 argsv2 = {};
+  argsv2.fd = fd_src;
+  snprintf(argsv2.name, BTRFS_SUBVOL_NAME_MAX, "%s", dst);
+  int r = ioctl(fd, BTRFS_IOC_SNAP_CREATE_V2, &argsv2);
+  int err = errno;
+
+  close(fd);
+  close(fd_src);
+
+
+  if(r < 0) {
+    snprintf(errbuf, errlen,
+             "heap_btrfs: Unable to create snapshot %s from %s -- %s",
+             dst, src, strerror(err));
+    return -1;
+  }
+
+  snprintf(outpath, PATH_MAX, "%s/%s", parent, dst);
+
   return 0;
 }
+
 
 /**
  *
@@ -150,6 +220,7 @@ heap_btrfs_init(const char *path)
   hm->super.dtor = heap_btrfs_dtor;
   hm->super.open_heap = heap_btrfs_open;
   hm->super.delete_heap = heap_btrfs_delete;
+  hm->super.clone_heap = heap_btrfs_clone;
 
   return &hm->super;
 }

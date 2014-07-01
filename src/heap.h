@@ -12,6 +12,10 @@ typedef struct heapmgr {
 
   int (*delete_heap)(struct heapmgr *hm, const char *name);
 
+  int (*clone_heap)(struct heapmgr *hm, const char *src,
+                    const char *dst, char outpath[PATH_MAX],
+                    char *errbuf, size_t errlen);
+
 } heapmgr_t;
 
 
