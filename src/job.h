@@ -39,24 +39,27 @@ typedef struct job {
   const char *projectdir_internal;
   const char *projectdir_external;
 
-  //  const char *repodir;
-  //  const char *workdir;
-  //  const char *homedir;
-
   // For autobuild mode
   int autobuild_version;
 
   // Build environment
   const char *buildenvdir;
 
-  // ID of buildenv as given by the project
-  char modified_buildenv[512];
+  // ID of base buildenv
+  const char *base_buildenv;
+
+  // SHA1 of components that form the final build environment
+  uint8_t modified_buildenv_digest[20];
 
   int (*query_env)(struct job *j);
 
   int (*prep_env)(struct job *j);
 
   int (*build)(struct job *j);
+
+  const char **builddeps;
+  int num_builddeps;
+
 
 } job_t;
 

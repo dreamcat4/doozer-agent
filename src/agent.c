@@ -23,12 +23,21 @@
 #include "agent.h"
 #include "job.h"
 
+static int
+xferfunc(void *clientp, curl_off_t dltotal, curl_off_t dlnow,
+         curl_off_t ultotal, curl_off_t ulnow)
+{
+  return !running;
+}
+
+
+#define BM_FLAG_STOPPABLE 0x1
 
 /**
  *
  */
 static char *
-call_buildmaster0(buildmaster_t *bm, const char *accepthdr,
+call_buildmaster0(buildmaster_t *bm, int flags, const char *accepthdr,
                   const char *path, va_list ap)
 {
   char *out = NULL;
@@ -50,6 +59,12 @@ call_buildmaster0(buildmaster_t *bm, const char *accepthdr,
 
   curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, &libsvc_curl_sock_fn);
   curl_easy_setopt(curl, CURLOPT_OPENSOCKETDATA, NULL);
+
+  if(flags & BM_FLAG_STOPPABLE) {
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &flags);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, &xferfunc);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+  }
 
   struct curl_slist *slist = NULL;
   if(accepthdr) {
@@ -86,11 +101,11 @@ call_buildmaster0(buildmaster_t *bm, const char *accepthdr,
  *
  */
 char *
-call_buildmaster(buildmaster_t *bm, const char *path, ...)
+call_buildmaster(buildmaster_t *bm, int flags, const char *path, ...)
 {
   va_list ap;
   va_start(ap, path);
-  char *r = call_buildmaster0(bm, NULL, path, ap);
+  char *r = call_buildmaster0(bm, flags, NULL, path, ap);
   va_end(ap);
   return r;
 }
@@ -100,11 +115,11 @@ call_buildmaster(buildmaster_t *bm, const char *path, ...)
  *
  */
 static htsmsg_t *
-call_buildmaster_json(buildmaster_t *bm, const char *path, ...)
+call_buildmaster_json(buildmaster_t *bm, int flags, const char *path, ...)
 {
   va_list ap;
   va_start(ap, path);
-  char *r = call_buildmaster0(bm, "application/json", path, ap);
+  char *r = call_buildmaster0(bm, flags, "application/json", path, ap);
   va_end(ap);
 
   if(r == NULL)
@@ -127,35 +142,45 @@ getjob(buildmaster_t *bm)
 {
   char buf[4096];
   int off = 0;
-  htsmsg_t *msg = NULL;
+  const char *query = NULL;
   cfg_root(root);
 
-  cfg_t *targets_msg = cfg_get_list(root, "targets");
-  if(targets_msg == NULL) {
-    trace(LOG_ERR, "No targets configured");
-    return -1;
+
+  cfg_t *cmsg = cfg_get_map(root, "buildenvs");
+
+  if(cmsg == NULL) {
+    cmsg = cfg_get_map(root, "targets");
+    if(cmsg == NULL) {
+      trace(LOG_ERR, "No targets nor buildenvs configured");
+      return -1;
+    }
+    query = "targets";
+  } else {
+    query = "buildenvs";
   }
 
-  htsmsg_field_t *tfield;
-
-  HTSMSG_FOREACH(tfield, targets_msg) {
-    htsmsg_t *target = htsmsg_get_map_by_field(tfield);
-    const char *t_name = cfg_get_str(target, CFG("name"), NULL);
-    if(t_name == NULL)
+  htsmsg_field_t *f;
+  HTSMSG_FOREACH(f, cmsg) {
+    htsmsg_t *sub = htsmsg_get_map_by_field(f);
+    if(sub == NULL)
       continue;
 
     off += snprintf(buf + off, sizeof(buf) - off, "%s%s",
-                    off ? "," : "", t_name);
+                    off ? "," : "", f->hmf_name);
   }
 
+
   if(off == 0) {
-    trace(LOG_ERR, "No targets configured");
+    trace(LOG_ERR, "No %s configured", query);
     return -1;
   }
 
-  msg = call_buildmaster_json(bm, "getjob?targets=%s", buf);
+  htsmsg_t *msg;
+  msg = call_buildmaster_json(bm, BM_FLAG_STOPPABLE, "getjob?%s=%s",
+                              query, buf);
   if(msg == NULL) {
-    trace(LOG_ERR, "Unable to getjob -- %s", bm->last_rpc_error);
+    if(running)
+      trace(LOG_ERR, "Unable to getjob -- %s", bm->last_rpc_error);
     return -1;
   }
   job_process(bm, msg);
@@ -193,7 +218,7 @@ agent_run(void)
     return -1;
   }
 
-  char *msg = call_buildmaster(&bm, "hello");
+  char *msg = call_buildmaster(&bm, 0, "hello");
   if(msg == NULL) {
     trace(LOG_ERR, "Not welcomed by buildmaster -- %s",
           bm.last_rpc_error);
@@ -202,9 +227,14 @@ agent_run(void)
   free(msg);
   trace(LOG_DEBUG, "Welcomed by buildmaster");
 
-  while(!getjob(&bm)) {
+  while(running) {
+
+    if(getjob(&bm))
+      return -1;
+
     talloc_cleanup();
   }
+  talloc_cleanup();
 
   return 0;
 }
@@ -217,20 +247,32 @@ static void *
 agent_main(void *aux)
 {
   int sleeper = 1;
-  while(1) {
+  while(running) {
 
     talloc_cleanup();
 
     if(agent_run()) {
+      if(!running)
+        return NULL;
+
       sleeper = MIN(120, sleeper * 2);
       trace(LOG_ERR, "An error occured, sleeping for %d seconds", sleeper);
-      sleep(sleeper);
+
+      talloc_cleanup();
+
+      for(int i = 0; i < sleeper * 10; i++) {
+        if(!running)
+          return NULL;
+        usleep(100000);
+      }
     } else {
       sleeper = 1;
     }
   }
   return NULL;
 }
+
+pthread_t agent_tid;
 
 
 /**
@@ -239,8 +281,14 @@ agent_main(void *aux)
 void
 agent_init(void)
 {
+  pthread_create(&agent_tid, NULL, agent_main, NULL);
+}
 
-  pthread_t tid;
-  pthread_create(&tid, NULL, agent_main, NULL);
-
+/**
+ *
+ */
+void
+agent_join(void)
+{
+  pthread_join(agent_tid, NULL);
 }

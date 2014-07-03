@@ -13,6 +13,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <pthread.h>
 
 #include <string.h>
 #include <errno.h>
@@ -21,6 +22,8 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <stdarg.h>
+
+#include <sys/resource.h>
 
 #include "libsvc/htsmsg.h"
 #include "libsvc/misc.h"
@@ -37,20 +40,28 @@
 #endif
 
 
+LIST_HEAD(args_list, args);
+
 typedef struct args {
-  int pipe_stdout[2];
-  int pipe_stderr[2];
   void *opaque;
   int (*exec_cb)(void *opaque);
+  LIST_ENTRY(args) link;
+
+  int pipe_stdout[2];
+  int pipe_stderr[2];
 
 #ifdef SPAWN_NEW_USER
   int pipe_setup[2];
   int newuser;
 #endif
 
+  pid_t pid;
 
 } args_t;
 
+static pthread_mutex_t spawn_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct args_list active_args;
+static int stopped;
 
 /**
  *
@@ -141,8 +152,14 @@ spawn(int (*exec_cb)(void *opaque),
       htsbuf_queue_t *output, int timeout, int flags,
       char *errbuf, size_t errlen)
 {
-  pid_t pid;
   int forkerr;
+
+  pthread_mutex_lock(&spawn_mutex);
+  if(stopped) {
+    snprintf(errbuf, errlen, "Buildagent is stopping");
+    pthread_mutex_unlock(&spawn_mutex);
+    return DOOZER_TEMPORARY_FAIL;
+  }
 
   args_t *a = malloc(sizeof(args_t));
   a->exec_cb = exec_cb;
@@ -153,6 +170,7 @@ spawn(int (*exec_cb)(void *opaque),
   if(pipe(a->pipe_stdout)) {
     snprintf(errbuf, errlen, "Unable to create stdout pipe -- %s",
              strerror(errno));
+    pthread_mutex_unlock(&spawn_mutex);
     free(a);
     return DOOZER_TEMPORARY_FAIL;
   }
@@ -162,6 +180,7 @@ spawn(int (*exec_cb)(void *opaque),
              strerror(errno));
     close(a->pipe_stdout[0]);
     close(a->pipe_stdout[1]);
+    pthread_mutex_unlock(&spawn_mutex);
     free(a);
     return DOOZER_TEMPORARY_FAIL;
   }
@@ -173,7 +192,7 @@ spawn(int (*exec_cb)(void *opaque),
   int clone_flags = SIGCHLD;
   if(a->newuser)
     clone_flags |=
-      CLONE_NEWUSER | CLONE_NEWIPC | CLONE_NEWUTS | CLONE_NEWNS;
+      CLONE_NEWUSER | CLONE_NEWIPC | CLONE_NEWUTS | CLONE_NEWNS | CLONE_NEWPID;
 
   if(a->newuser) {
 
@@ -185,6 +204,7 @@ spawn(int (*exec_cb)(void *opaque),
       close(a->pipe_stderr[0]);
       close(a->pipe_stderr[1]);
       free(a);
+      pthread_mutex_unlock(&spawn_mutex);
       return DOOZER_TEMPORARY_FAIL;
     }
   }
@@ -193,7 +213,7 @@ spawn(int (*exec_cb)(void *opaque),
   void *stack = mmap(NULL, initial_stacksize, PROT_WRITE | PROT_READ,
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
-  pid = clone(child, stack + initial_stacksize, clone_flags, a);
+  a->pid = clone(child, stack + initial_stacksize, clone_flags, a);
 
   forkerr = errno;
   munmap(stack, initial_stacksize);
@@ -207,7 +227,7 @@ spawn(int (*exec_cb)(void *opaque),
   }
 #endif
 
-  if(pid == -1) {
+  if(a->pid == -1) {
     close(a->pipe_stdout[0]);
     close(a->pipe_stdout[1]);
     close(a->pipe_stderr[0]);
@@ -221,6 +241,7 @@ spawn(int (*exec_cb)(void *opaque),
     snprintf(errbuf, errlen, "Unable to fork -- %s",
              strerror(forkerr));
     free(a);
+    pthread_mutex_unlock(&spawn_mutex);
     return DOOZER_TEMPORARY_FAIL;
   }
 
@@ -241,13 +262,13 @@ spawn(int (*exec_cb)(void *opaque),
     snprintf(mapping, sizeof(mapping), "%d %d %d\n%d %d %d\n",
              0, UIDGID_OFFSET, 1000,
              build_uid, build_uid, 1);
-    snprintf(map_path, PATH_MAX, "/proc/%ld/uid_map", (long)pid);
+    snprintf(map_path, PATH_MAX, "/proc/%ld/uid_map", (long)a->pid);
     update_map(map_path, mapping);
 
     snprintf(mapping, sizeof(mapping), "%d %d %d\n%d %d %d\n",
              0, UIDGID_OFFSET, 1000,
              build_gid, build_gid, 1);
-    snprintf(map_path, PATH_MAX, "/proc/%ld/gid_map", (long)pid);
+    snprintf(map_path, PATH_MAX, "/proc/%ld/gid_map", (long)a->pid);
     update_map(map_path, mapping);
 
     // Clone setup pipe to tell child it can continue with exec()
@@ -256,17 +277,21 @@ spawn(int (*exec_cb)(void *opaque),
   }
 #endif
 
+  int err = 0;
+
+  LIST_INSERT_HEAD(&active_args, a, link);
 
   struct pollfd fds[2] = {
     {
       .fd = a->pipe_stdout[0],
       .events = POLLIN | POLLHUP | POLLERR,
     }, {
-
       .fd = a->pipe_stderr[0],
       .events = POLLIN | POLLHUP | POLLERR,
     }
   };
+
+  pthread_mutex_unlock(&spawn_mutex);
 
   int got_timeout = 0;
 
@@ -276,8 +301,6 @@ spawn(int (*exec_cb)(void *opaque),
 
   htsbuf_queue_init(&stdout_q, 0);
   htsbuf_queue_init(&stderr_q, 0);
-
-  int err = 0;
 
   while(!err) {
 
@@ -344,24 +367,43 @@ spawn(int (*exec_cb)(void *opaque),
     }
   }
 
+  pthread_mutex_lock(&spawn_mutex);
+  LIST_REMOVE(a, link);
+
   // Close read ends of pipe
   close(a->pipe_stdout[0]);
   close(a->pipe_stderr[0]);
+
+  pthread_mutex_unlock(&spawn_mutex);
+
   free(a);
 
-  if(got_timeout || err)
-    kill(pid, SIGKILL);
+  if(got_timeout || err) {
+    kill(a->pid, SIGKILL);
+  }
 
   int status;
-  if(waitpid(pid, &status, 0) == -1) {
+  struct rusage rr;
+  if(wait4(a->pid, &status, 0, &rr) == -1) {
     snprintf(errbuf, errlen, "Unable to wait for child -- %s",
              strerror(errno));
     return DOOZER_TEMPORARY_FAIL;
   }
 
+  printf("RESOURCE USAGE: user:%ld.%ld system:%ld.%ld\n",
+         rr.ru_utime.tv_sec,
+         rr.ru_utime.tv_usec,
+         rr.ru_stime.tv_sec,
+         rr.ru_stime.tv_usec);
+
   if(got_timeout) {
     snprintf(errbuf, errlen, "No output detected for %d seconds",
              timeout);
+    return DOOZER_TEMPORARY_FAIL;
+  }
+
+  if(stopped) {
+    snprintf(errbuf, errlen, "Job aborted");
     return DOOZER_TEMPORARY_FAIL;
   }
 
@@ -370,7 +412,7 @@ spawn(int (*exec_cb)(void *opaque),
 
   if(WIFEXITED(status)) {
     return WEXITSTATUS(status);
-  } else if (WIFSIGNALED(status)) {
+  } else if(WIFSIGNALED(status)) {
 #ifdef WCOREDUMP
     if(WCOREDUMP(status)) {
       snprintf(errbuf, errlen, "Core dumped");
@@ -386,3 +428,17 @@ spawn(int (*exec_cb)(void *opaque),
   return DOOZER_TEMPORARY_FAIL;
 }
 
+
+
+void
+spawn_stop_all(void)
+{
+  pthread_mutex_lock(&spawn_mutex);
+  stopped = 1;
+
+  args_t *a;
+  LIST_FOREACH(a, &active_args, link)
+    kill(a->pid, SIGTERM);
+
+  pthread_mutex_unlock(&spawn_mutex);
+}

@@ -9,3 +9,4 @@ int spawn(int (*exec_cb)(void *opaque),
           struct htsbuf_queue *output, int timeout,
           int flags, char *errbuf, size_t errlen);
 
+void spawn_stop_all(void);

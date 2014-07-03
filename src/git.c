@@ -51,6 +51,9 @@ progress_cb(const char *str, int len, void *data)
 {
   printf("remote: %.*s", len, str);
   fflush(stdout); /* We don't have the \n to force the flush */
+
+  if(!running)
+    return 1;
   return 0;
 }
 
@@ -65,6 +68,12 @@ cred_acquire_cb(git_cred **out,
 		unsigned int allowed_types,
 		void *payload)
 {
+  if(allowed_types & GIT_CREDTYPE_SSH_KEY) {
+    return git_cred_ssh_key_new(out, username_from_url,
+                                "/tmp/id_rsa.pub", "/tmp/id_rsa", "");
+  }
+  return -1;
+
 #if 0
   project_t *p = payload;
 

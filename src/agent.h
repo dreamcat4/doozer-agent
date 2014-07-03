@@ -7,10 +7,11 @@ extern struct heapmgr *project_heap_mgr;
 extern struct heapmgr *buildenv_heap_mgr;
 extern int build_uid;
 extern int build_gid;
+extern int running;
 
 #define DOOZER_PERMANENT_FAIL -1
 #define DOOZER_TEMPORARY_FAIL -2
-
+#define DOOZER_SKIP           -3
 
 /**
  *
@@ -27,7 +28,9 @@ typedef struct buildmaster {
 
 void agent_init(void);
 
-char *call_buildmaster(buildmaster_t *bm, const char *path, ...);
+void agent_join(void);
+
+char *call_buildmaster(buildmaster_t *bm, int flags, const char *path, ...);
 
 
 #ifdef linux

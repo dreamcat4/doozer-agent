@@ -14,19 +14,20 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <dirent.h>
 
 #include "libsvc/htsmsg.h"
 #include "libsvc/misc.h"
 #include "libsvc/trace.h"
 #include "libsvc/htsbuf.h"
 #include "libsvc/misc.h"
+#include "libsvc/talloc.h"
 
 #include "job.h"
 #include "heap.h"
 #include "git.h"
 #include "artifact.h"
-#include "autobuild.h"
-#include "doozerctrl.h"
+#include "dotdoozer.h"
 #include "makefile.h"
 #include "buildenv.h"
 
@@ -55,7 +56,8 @@ job_report_status_va(job_t *j, const char *status0, const char *fmt, va_list ap)
 
   for(int i = 0; i < 10; i++) {
 
-    char *r = call_buildmaster(j->bm, "report?jobid=%d&jobsecret=%s&status=%s&msg=%s",
+    char *r = call_buildmaster(j->bm, 0,
+                               "report?jobid=%d&jobsecret=%s&status=%s&msg=%s",
                                j->jobid, j->jobsecret, status, msg);
 
     if(r == NULL) {
@@ -121,11 +123,15 @@ typedef struct job_run_command_aux {
 } job_run_command_aux_t;
 
 
+
+#define ARTIFACT_GZIP              0x1
+#define ARTIFACT_ALREADY_VERSIONED 0x2
+
 /**
  *
  */
 static int
-intercept_doozer_artifact(job_t *j, const char *a, int gzipped,
+intercept_doozer_artifact(job_t *j, const char *a, int flags,
                           char *errbuf, size_t errlen)
 {
   char *line = mystrdupa(a);
@@ -139,10 +145,15 @@ intercept_doozer_artifact(job_t *j, const char *a, int gzipped,
   const char *filetype    = argv[1];
   const char *contenttype = argv[2];
   const char *filename    = argv[3];
-
+  const char *origpath    = localpath;
   char newpath[PATH_MAX];
 
   if(localpath[0] == '/') {
+
+    /**
+     * Convert from internal path (inside chroot which the build sees)
+     * to external path (that which we see)
+     */
 
     if(!strncmp(localpath, j->projectdir_internal,
                 strlen(j->projectdir_internal))) {
@@ -159,20 +170,84 @@ intercept_doozer_artifact(job_t *j, const char *a, int gzipped,
     localpath = newpath;
   }
 
-  char newfilename[PATH_MAX];
+  /**
+   * Ok, verify that the path is actually inside the build area.
+   *
+   * We use realpath(3), thus user is allowed to use a few ../ in the path, etc
+   * as long as it does not escape the rootenv
+   */
 
-  char *file_ending = strrchr(filename, '.');
-  if(file_ending != NULL)
-    *file_ending++ = 0;
+  int follow_cnt = 0;
 
-  snprintf(newfilename, sizeof(newfilename),
-           "%s-%s%s%s",
-           filename, j->version,
-           file_ending ? "." : "",
-           file_ending ?: "");
+  while(1) {
 
-  if(artifact_add_file(j, filetype, newfilename, contenttype,
-                       localpath, gzipped, errbuf, errlen))
+    if(follow_cnt == 10) {
+      snprintf(errbuf, errlen, "Too many symbolic links at %s",
+               origpath);
+      return DOOZER_PERMANENT_FAIL;
+    }
+
+    char localrealpath[PATH_MAX];
+    if(realpath(localpath, localrealpath) == NULL) {
+      snprintf(errbuf, errlen, "Invalid artifact path %s -- %s",
+               localpath, strerror(errno));
+      return DOOZER_PERMANENT_FAIL;
+    }
+
+    if(mystrbegins(localrealpath, j->projectdir_external) == NULL) {
+      snprintf(errbuf, errlen, "Invalid artifact path %s -- Not within build area",
+               localpath);
+      return DOOZER_PERMANENT_FAIL;
+    }
+
+    localpath = localrealpath;
+
+    struct stat st;
+    if(lstat(localpath, &st)) {
+      snprintf(errbuf, errlen, "Invalid artifact path %s -- %s",
+               localpath, strerror(errno));
+      return DOOZER_PERMANENT_FAIL;
+    }
+
+    if(S_ISREG(st.st_mode)) {
+      break;
+    } else if(S_ISLNK(st.st_mode)) {
+      if(readlink(localpath, newpath, sizeof(newpath)) == -1) {
+        snprintf(errbuf, errlen, "Unable to follow symbolc link %s -- %s",
+                 localpath, strerror(errno));
+        return DOOZER_PERMANENT_FAIL;
+      }
+
+      localpath = newpath;
+      follow_cnt++;
+      continue;
+
+    } else {
+      snprintf(errbuf, errlen, "Unable to send %s -- Not a regular file",
+               localpath);
+      return DOOZER_PERMANENT_FAIL;
+    }
+  }
+
+
+  if(!(flags & ARTIFACT_ALREADY_VERSIONED)) {
+
+    char newfilename[PATH_MAX];
+
+    char *file_ending = strrchr(filename, '.');
+    if(file_ending != NULL)
+      *file_ending++ = 0;
+
+    snprintf(newfilename, sizeof(newfilename),
+             "%s-%s%s%s",
+             filename, j->version,
+             file_ending ? "." : "",
+             file_ending ?: "");
+    filename = newfilename;
+  }
+
+  if(artifact_add_file(j, filetype, filename, contenttype,
+                       localpath, !!(flags & ARTIFACT_GZIP), errbuf, errlen))
     return DOOZER_PERMANENT_FAIL;
   return 0;
 }
@@ -195,9 +270,24 @@ job_run_command_line_intercept(void *opaque,
   if((a = mystrbegins(line, "doozer-artifact:")) != NULL)
     err = intercept_doozer_artifact(j, a, 0, errbuf, errlen);
   else if((a = mystrbegins(line, "doozer-artifact-gzip:")) != NULL)
-    err = intercept_doozer_artifact(j, a, 1, errbuf, errlen);
+    err = intercept_doozer_artifact(j, a, ARTIFACT_GZIP, errbuf, errlen);
+  else if((a = mystrbegins(line, "doozer-versioned-artifact:")) != NULL)
+    err = intercept_doozer_artifact(j, a, ARTIFACT_ALREADY_VERSIONED,
+                                    errbuf, errlen);
   return err;
 }
+
+static int job_terminated = 0;
+
+/**
+ *
+ */
+static void
+jobterm(int x)
+{
+  job_terminated = 1;
+}
+
 
 /**
  *
@@ -210,7 +300,6 @@ job_run_command_spawn(void *opaque)
   char path[PATH_MAX];
 
   if(j->buildenvdir != NULL) {
-
 
     linux_cap_change(1, CAP_SYS_ADMIN, -1);
 
@@ -279,6 +368,79 @@ job_run_command_spawn(void *opaque)
     }
   }
 
+
+  if(getpid() == 1) {
+    // We run in an isolated pid space
+
+    pid_t newpid = fork();
+    if(newpid == -1) {
+      fprintf(stderr, "Unable to fork -- %s\n", strerror(errno));
+      return 1;
+    }
+
+    if(newpid != 0) {
+      int status;
+      sigset_t set;
+
+      sigemptyset(&set);
+      sigaddset(&set, SIGTERM);
+
+      struct sigaction sa = {};
+      sa.sa_handler = jobterm;
+      sigaction(SIGTERM, &sa, NULL);
+
+      pthread_sigmask(SIG_UNBLOCK, &set, NULL);
+
+      while(1) {
+        pid_t p = waitpid(newpid, &status, 0);
+
+        if(p == -1) {
+
+          if(errno == EINTR) {
+            if(job_terminated) {
+              break;
+            } else {
+              continue;
+            }
+          }
+          fprintf(stderr, "wait() error -- %s\n", strerror(errno));
+        }
+        break;
+      }
+
+      // Kill off any remaining processes in this PID space
+      kill(-1, SIGKILL);
+
+      while(1) {
+        int status;
+        pid_t p = waitpid(-1, &status, WNOHANG);
+        if(p <= 0)
+          break;
+        fprintf(stderr, "Collected pid %d\n", p);
+      }
+
+      if(job_terminated) {
+        fprintf(stderr, "Job aborted\n");
+        return 1;
+      }
+
+      if(WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+      } else if(WIFSIGNALED(status)) {
+#ifdef WCOREDUMP
+        if(WCOREDUMP(status)) {
+          fprintf(stderr, "Core dumped\n");
+        }
+#endif
+        fprintf(stderr, "Terminated with signal %d\n", WTERMSIG(status));
+      } else {
+        fprintf(stderr, "Exited with statucode %d\n", status);
+      }
+      return 1;
+    }
+    setsid();
+  }
+
   char homevar[PATH_MAX];
   snprintf(homevar, sizeof(homevar), "HOME=%s/home", j->projectdir_internal);
 
@@ -302,6 +464,44 @@ job_run_command_spawn(void *opaque)
 /**
  *
  */
+static const char *
+joinarray(const char **argv, int argc)
+{
+  int len = 0;
+
+  if(argc == -1) {
+    argc = 0;
+    for(int i = 0; argv[i] != NULL; i++) {
+      len += strlen(argv[i]) + 1;
+      argc++;
+    }
+
+  } else {
+
+  for(int i = 0; i < argc; i++)
+    len += strlen(argv[i]) + 1;
+
+  }
+
+  if(len == 0)
+    return "";
+
+  char *r = talloc_malloc(len);
+  char *x = r;
+  for(int i = 0; i < argc; i++) {
+    int a = strlen(argv[i]);
+    memcpy(x, argv[i], a);
+    x[a] = ' ';
+    x += a + 1;
+  }
+  x[-1] = 0;
+  return r;
+}
+
+
+/**
+ *
+ */
 int
 job_run_command(job_t *j, const char **argv, int flags)
 {
@@ -310,17 +510,9 @@ job_run_command(job_t *j, const char **argv, int flags)
   aux.argv = argv;
   aux.flags = flags;
 
-  char cmdline[1024];
-  int l = 0;
-  cmdline[0] = 0;
-  for(;*argv; argv++)
-    l += snprintf(cmdline + l, sizeof(cmdline) - l, "%s%s",
-                  *argv, argv[1] ? " " : "");
-
-  job_report_status(j, "building", "Running: %s", cmdline);
+  job_report_status(j, "building", "Running: %s", joinarray(argv, -1));
 
   int spawn_flags = 0;
-
 
   return spawn(job_run_command_spawn,
                job_run_command_line_intercept,
@@ -356,10 +548,16 @@ job_mkdir(job_t *j,  const char *fmt, ...)
  *
  */
 static int
-job_probe_build(job_t *j)
+job_run(job_t *j)
 {
-  if(!autobuild_probe(j))
-    return 0;
+  int r;
+  // Checkout from GIT
+  if((r = git_checkout_repo(j)) != 0)
+    return r;
+
+  // A return value of '1' mean that this method does not apply on this repo
+  if((r = dotdoozer_build(j)) != DOOZER_SKIP)
+    return r;
 
   snprintf(j->errmsg, sizeof(j->errmsg),
            "No clue how to build from this repo");
@@ -367,111 +565,42 @@ job_probe_build(job_t *j)
 }
 
 
+/**
+ *
+ */
+static void
+remove_files_in_dir(const char *path)
+{
+
+  struct dirent **namelist;
+  int n;
+
+  n = scandir(path, &namelist, NULL, alphasort);
+  if(n < 0)
+    return;
+
+  while(n--) {
+    char path2[PATH_MAX];
+    snprintf(path2, sizeof(path2), "%s/%s", path, namelist[n]->d_name);
+    unlink(path2);
+    free(namelist[n]);
+  }
+  free(namelist);
+
+}
 
 /**
  *
  */
-static int
-job_run(job_t *j)
+static void
+cleanup_files(job_t *j)
 {
-  int r;
-  char buildenv_root[PATH_MAX];
-
-  // Checkout from GIT
-  if((r = git_checkout_repo(j)) != 0)
-    return r;
-
-  j->projectdir_internal = "/project";
-
-  // Figure out which build strategy to use
-
-  if((r = job_probe_build(j)) != 0)
-    return r;
-
-  const char *buildenv_base_id = "base1-precise-amd64";
-
-  if(buildenv_install(j, buildenv_base_id,
-                      "/home/andoma/doozerlab/precise-amd64.tar.xz"))
-    return DOOZER_PERMANENT_FAIL;
-
-
-  if(j->query_env != NULL) {
-
-    // Need to run stuff to figure out what build environment to use
-    // We do this in a snapshot of the base buildenv
-
-    // First we need to have a base buildenv
-
-    r = buildenv_heap_mgr->clone_heap(buildenv_heap_mgr,
-                                      buildenv_base_id,
-                                      "current", buildenv_root,
-                                      j->errmsg, sizeof(j->errmsg));
-    if(r)
-      return DOOZER_PERMANENT_FAIL;
-
-    j->buildenvdir = buildenv_root;
-    r = j->query_env(j);
-
-    if(r) {
-      buildenv_heap_mgr->delete_heap(buildenv_heap_mgr, "current");
-      return r;
-    }
-
-    if(j->modified_buildenv[0]) {
-
-      buildenv_heap_mgr->delete_heap(buildenv_heap_mgr, "current");
-
-      char buildenv_modified_id[512];
-
-      snprintf(buildenv_modified_id, sizeof(buildenv_modified_id),
-               "project1-%s-%s-%s-%s",
-               j->project, j->target, j->modified_buildenv,
-               buildenv_base_id);
-
-      r = buildenv_heap_mgr->open_heap(buildenv_heap_mgr,
-                                       buildenv_modified_id,
-                                       buildenv_root,
-                                       j->errmsg, sizeof(j->errmsg), 0);
-      if(r < 0) {
-        r = buildenv_heap_mgr->clone_heap(buildenv_heap_mgr,
-                                          buildenv_base_id,
-                                          buildenv_modified_id, buildenv_root,
-                                          j->errmsg, sizeof(j->errmsg));
-
-
-        j->buildenvdir = buildenv_root;
-        r = j->prep_env(j);
-
-        if(r) {
-          buildenv_heap_mgr->delete_heap(buildenv_heap_mgr,
-                                         buildenv_modified_id);
-          return r;
-        }
-      }
-
-
-      r = buildenv_heap_mgr->clone_heap(buildenv_heap_mgr,
-                                        buildenv_modified_id,
-                                        "current",
-                                        buildenv_root,
-                                        j->errmsg, sizeof(j->errmsg));
-
-      j->buildenvdir = buildenv_root;
-
-    } else {
-
-      j->buildenvdir = buildenv_root;
-
-      // No way to get buildenv id, just build in current
-      r = j->prep_env(j);
-
-    }
-  }
-
-  r = j->build(j);
-  return r;
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/repo", j->projectdir_external);
+  remove_files_in_dir(path);
+  snprintf(path, sizeof(path), "%s", j->projectdir_external);
+  remove_files_in_dir(path);
 }
-
 
 /**
  *
@@ -556,6 +685,8 @@ job_process(buildmaster_t *bm, htsmsg_t *msg)
   if(job_mkdir(&j, "home"))
     return;
 
+  cleanup_files(&j);
+
   LIST_INIT(&j.artifacts);
   pthread_cond_init(&j.artifact_cond, NULL);
   htsbuf_queue_init2(&j.buildlog, 100000);
@@ -590,6 +721,9 @@ job_process(buildmaster_t *bm, htsmsg_t *msg)
     break;
   }
  cleanup:
+
+  cleanup_files(&j);
+
   htsbuf_queue_flush(&j.buildlog);
   pthread_cond_destroy(&j.artifact_cond);
   assert(LIST_FIRST(&j.artifacts) == NULL);

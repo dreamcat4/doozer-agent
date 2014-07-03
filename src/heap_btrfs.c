@@ -119,7 +119,7 @@ heap_btrfs_delete(struct heapmgr *super, const char *subvolname)
 
   close(fd);
 
-  if(r == 0)
+  if(r == 0 || err == ENOENT)
     return 0;
 
   trace(LOG_ERR,

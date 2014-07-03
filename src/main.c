@@ -22,6 +22,7 @@
 
 #include "agent.h"
 #include "artifact.h"
+#include "spawn.h"
 
 #include <sys/types.h>
 #include <regex.h>
@@ -34,7 +35,7 @@ struct heapmgr *buildenv_heap_mgr;
 int build_uid = -1;
 int build_gid = -1;
 
-static int running = 1;
+int running = 1;
 static int reload = 0;
 
 /**
@@ -329,6 +330,10 @@ main(int argc, char **argv)
     }
     pause();
   }
+
+  spawn_stop_all();
+  trace(LOG_NOTICE, "Waiting for jobs to stop");
+  agent_join();
 
   return 0;
 }

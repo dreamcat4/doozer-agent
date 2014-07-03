@@ -28,8 +28,7 @@ SRCS =  src/main.c \
 	src/agent.c \
 	src/job.c \
 	src/git.c \
-	src/doozerctrl.c \
-	src/autobuild.c \
+	src/dotdoozer.c \
 	src/makefile.c \
 	src/artifact.c \
 	src/spawn.c \

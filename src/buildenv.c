@@ -11,7 +11,12 @@
 #include "buildenv.h"
 #include "heap.h"
 
+#include "libsvc/curlhelpers.h"
+#include "libsvc/cfg.h"
 
+/**
+ *
+ */
 static int
 makenode(const char *root, const char *d, mode_t mode, dev_t dev,
          char *errbuf, size_t errlen)
@@ -69,20 +74,50 @@ makenodes(const char *root, char *errbuf, size_t errlen)
 }
 
 
-
+/**
+ *
+ */
 static int
 buildenv_extract(const char *source, const char *target,
                  char *errbuf, size_t errlen,
-                 int uidgidoffset)
+                 int uidgidoffset, job_t *j)
 {
   int rval = -1;
-
+  char *data = NULL;
+  size_t datalen = 0;
+  int r;
   struct archive *a = archive_read_new();
   archive_read_support_compression_all(a);
   archive_read_support_format_all(a);
   archive_read_support_filter_all(a);
 
-  int r = archive_read_open_filename(a, source, 65536);
+  if(!strncmp(source, "http://", 7) || !strncmp(source, "https://", 8)) {
+
+    job_report_status(j, "building", "Downloading %s", source);
+
+    CURL *curl = curl_easy_init();
+
+    FILE *f = open_memstream(&data, &datalen);
+    curl_easy_setopt(curl, CURLOPT_URL, source);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, f);
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+    curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, &libsvc_curl_sock_fn);
+    curl_easy_setopt(curl, CURLOPT_OPENSOCKETDATA, NULL);
+    CURLcode cerr = curl_easy_perform(curl);
+    fclose(f);
+    curl_easy_cleanup(curl);
+
+    if(cerr) {
+      snprintf(errbuf, errlen, "Unable to download %s -- %s",
+               source, curl_easy_strerror(cerr));
+      return 1;
+    }
+
+    r = archive_read_open_memory(a, (void *)data, datalen);
+  } else {
+    r = archive_read_open_filename(a, source, 65536);
+  }
 
   if(r) {
     snprintf(errbuf, errlen, "%s", archive_error_string(a));
@@ -210,19 +245,30 @@ buildenv_extract(const char *source, const char *target,
 
  bad:
   archive_read_free(a);
+  free(data);
   return rval;
 }
-
 
 
 /**
  *
  */
 int
-buildenv_install(job_t *j, const char *id, const char *source)
+buildenv_install(job_t *j)
 {
   char heapdir[PATH_MAX];
   int r;
+  const char *id = j->base_buildenv;
+
+  cfg_root(root);
+
+  const char *source = cfg_get_str(root, CFG("buildenvs", id, "source"), NULL);
+
+  if(source == NULL) {
+    snprintf(j->errmsg, sizeof(j->errmsg), "Don't know about buildenv: %s",
+             id);
+    return DOOZER_PERMANENT_FAIL;
+  }
 
   r = buildenv_heap_mgr->open_heap(buildenv_heap_mgr, id,
                                    heapdir, j->errmsg, sizeof(j->errmsg), 1);
@@ -247,7 +293,7 @@ buildenv_install(job_t *j, const char *id, const char *source)
                    CAP_MKNOD,
                    -1);
 
-  r = buildenv_extract(source, heapdir, j->errmsg, sizeof(j->errmsg), 10000);
+  r = buildenv_extract(source, heapdir, j->errmsg, sizeof(j->errmsg), 10000, j);
 
   if(!r)
     r = makenodes(heapdir, j->errmsg, sizeof(j->errmsg));
