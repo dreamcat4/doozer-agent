@@ -265,7 +265,7 @@ buildenv_install(job_t *j)
   r = buildenv_heap_mgr->open_heap(buildenv_heap_mgr, id,
                                    heapdir, j->errmsg, sizeof(j->errmsg), 0);
 
-  if(r == 0) {
+  if(r == 1) {
     // Exist
     job_report_status(j, "building", "Build environment %s exist", id);
     return 0;

@@ -209,11 +209,11 @@ heap_btrfs_rename(struct heapmgr *super, const char *src, const char *dst,
   snprintf(srcpath, sizeof(srcpath), "%s/%s", hm->path, src);
   snprintf(outpath, PATH_MAX, "%s/%s", hm->path, dst);
 
-  if(!rename(srcpath, dstpath))
+  if(!rename(srcpath, outpath))
     return 0;
 
   snprintf(errbuf, errlen, "Unable to rename %s to %s -- %s",
-           srcpath, dstpath, strerror(errno));
+           srcpath, outpath, strerror(errno));
   return -1;
 }
 

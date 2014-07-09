@@ -141,7 +141,7 @@ dotdoozer_prep_buildenv(job_t *j)
   j->buildenvdir = tstrdup(path);
 
   r = job_run_command(j,
-                      (const char *[]){"apt-get", "update", NULL},
+                      (const char *[]){"/usr/bin/apt-get", "update", NULL},
                       JOB_RUN_AS_ROOT);
 
   int argc = 4 + j->num_builddeps + 1;
@@ -160,10 +160,10 @@ dotdoozer_prep_buildenv(job_t *j)
   r = job_run_command(j, argv, JOB_RUN_AS_ROOT);
 
   if(!r) {
-    buildenv_heap_mgr->rename_heap(buildenv_heap_mgr, "tmp",
-                                   j->buildenv_modified_id,
-                                   path,
-                                   j->errmsg, sizeof(j->errmsg));
+    r = buildenv_heap_mgr->rename_heap(buildenv_heap_mgr, "tmp",
+                                       j->buildenv_modified_id,
+                                       path,
+                                       j->errmsg, sizeof(j->errmsg));
     j->buildenvdir = tstrdup(path);
   }
 

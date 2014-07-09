@@ -260,18 +260,21 @@ main(int argc, char **argv)
   int c;
   sigset_t set;
   const char *cfgfile = NULL;
-
+  const char *jobfile = NULL;
   const char *defconf = "doozer-agent.json";
 
   signal(SIGPIPE, handle_sigpipe);
 
-  while((c = getopt(argc, argv, "c:s:")) != -1) {
+  while((c = getopt(argc, argv, "c:s:j:")) != -1) {
     switch(c) {
     case 'c':
       cfgfile = optarg;
       break;
     case 's':
       enable_syslog("doozer-agent", optarg);
+      break;
+    case 'j':
+      jobfile = optarg;
       break;
     }
   }
@@ -308,7 +311,7 @@ main(int argc, char **argv)
 
   artifact_init();
 
-  agent_init();
+  agent_init(jobfile);
 
   running = 1;
   sigemptyset(&set);
@@ -334,6 +337,5 @@ main(int argc, char **argv)
   spawn_stop_all();
   trace(LOG_NOTICE, "Waiting for jobs to stop");
   agent_join();
-
   return 0;
 }

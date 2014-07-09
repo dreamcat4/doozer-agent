@@ -118,6 +118,9 @@ artifact_add(job_t *j, const char *type, const char *filename,
              const char *content_type, void *ptr, size_t size,
              int gzip)
 {
+  if(j->bm == NULL)
+    gzip = 0;
+
   artifact_t *a = calloc(1, sizeof(artifact_t));
   a->size = size;
   a->mapsize = size;
@@ -272,6 +275,13 @@ artifact_send(artifact_t *a)
   char url[2048];
   const job_t *j = a->job;
   const buildmaster_t *bm = j->bm;
+
+  if(bm == NULL) {
+    snprintf(url, sizeof(url), "/tmp/doozer-artifact-%s", a->filename);
+    writefile(url, a->data, a->size);
+    trace(LOG_INFO, "Wrote artifact %s to %s", a->filename, url);
+    return 0;
+  }
 
   snprintf(url, sizeof(url),
            "%s/buildmaster/artifact"

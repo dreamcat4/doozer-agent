@@ -240,6 +240,27 @@ agent_run(void)
 }
 
 
+
+static void
+run_from_file(const char *path)
+{
+  int err;
+  char *x = readfile(path, &err, NULL);
+  if(x == NULL) {
+    fprintf(stderr, "Unable to open %s -- %s", path, strerror(err));
+    exit(1);
+  }
+
+  char errbuf[512];
+  htsmsg_t *m = htsmsg_json_deserialize(x, errbuf, sizeof(errbuf));
+  if(m == NULL) {
+    fprintf(stderr, "Unable to decode %s -- %s", path, errbuf);
+    exit(1);
+  }
+  job_process(NULL, m);
+}
+
+
 /**
  *
  */
@@ -247,6 +268,12 @@ static void *
 agent_main(void *aux)
 {
   int sleeper = 1;
+
+  if(aux) {
+    run_from_file(aux);
+    return NULL;
+  }
+
   while(running) {
 
     talloc_cleanup();
@@ -279,10 +306,11 @@ pthread_t agent_tid;
  *
  */
 void
-agent_init(void)
+agent_init(const char *file)
 {
-  pthread_create(&agent_tid, NULL, agent_main, NULL);
+  pthread_create(&agent_tid, NULL, agent_main, (void *)file);
 }
+
 
 /**
  *

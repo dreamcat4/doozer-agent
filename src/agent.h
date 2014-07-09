@@ -26,7 +26,7 @@ typedef struct buildmaster {
 } buildmaster_t;
 
 
-void agent_init(void);
+void agent_init(const char *path);
 
 void agent_join(void);
 

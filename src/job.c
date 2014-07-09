@@ -17,6 +17,7 @@
 #include <dirent.h>
 
 #include "libsvc/htsmsg.h"
+#include "libsvc/htsmsg_json.h"
 #include "libsvc/misc.h"
 #include "libsvc/trace.h"
 #include "libsvc/htsbuf.h"
@@ -43,16 +44,20 @@ job_report_status_va(job_t *j, const char *status0, const char *fmt, va_list ap)
   char msg0[512];
   vsnprintf(msg0, sizeof(msg0), fmt, ap);
 
+  trace(LOG_INFO, "Project: %s (%s): %s: %s",
+        j->project ?: "<Unknown project>",
+        j->version ?: "<Unknown version>",
+        status0, msg0);
+
+  if(j->bm == NULL)
+    return;
+
   char status[64];
   char msg[512];
 
   url_escape(status, sizeof(status), status0, URL_ESCAPE_PARAM);
   url_escape(msg,    sizeof(msg),    msg0,    URL_ESCAPE_PARAM);
 
-  trace(LOG_INFO, "Project: %s (%s): %s: %s",
-        j->project ?: "<Unknown project>",
-        j->version ?: "<Unknown version>",
-        status0, msg0);
 
   for(int i = 0; i < 10; i++) {
 
@@ -323,6 +328,14 @@ job_run_command_spawn(void *opaque)
               path, strerror(errno));
       return 1;
     }
+#if 0
+    snprintf(path, sizeof(path), "%s/proc", j->buildenvdir);
+    if(mount("proc", path, "proc", 0, "")) {
+      fprintf(stderr, "Unable to mount proc on %s -- %s\n",
+              path, strerror(errno));
+      return 1;
+    }
+#endif
 
     linux_cap_change(0, CAP_SYS_ADMIN, -1);
 
@@ -655,7 +668,6 @@ job_process(buildmaster_t *bm, htsmsg_t *msg)
     job_report_temp_fail(&j, "No 'target' field in work");
     return;
   }
-
   if((j.repourl = htsmsg_get_str(msg, "repo")) == NULL) {
     job_report_temp_fail(&j, "No 'repo' field in work");
     return;
