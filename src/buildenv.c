@@ -10,6 +10,7 @@
 #include "agent.h"
 #include "buildenv.h"
 #include "heap.h"
+#include "autobuild.h"
 
 #include "libsvc/curlhelpers.h"
 #include "libsvc/cfg.h"
@@ -258,29 +259,25 @@ buildenv_install(job_t *j)
 {
   char heapdir[PATH_MAX];
   int r;
-  const char *id = j->base_buildenv;
-
-  cfg_root(root);
-
-  const char *source = cfg_get_str(root, CFG("buildenvs", id, "source"), NULL);
-
-  if(source == NULL) {
-    snprintf(j->errmsg, sizeof(j->errmsg), "Don't know about buildenv: %s",
-             id);
-    return DOOZER_PERMANENT_FAIL;
-  }
+  const char *id = j->buildenv_source_id;
+  const char *source = j->buildenv_source;
 
   r = buildenv_heap_mgr->open_heap(buildenv_heap_mgr, id,
-                                   heapdir, j->errmsg, sizeof(j->errmsg), 1);
+                                   heapdir, j->errmsg, sizeof(j->errmsg), 0);
 
-  if(r == 1) {
-    // Already exist
+  if(r == 0) {
+    // Exist
     job_report_status(j, "building", "Build environment %s exist", id);
     return 0;
   }
 
+  buildenv_heap_mgr->delete_heap(buildenv_heap_mgr, "tmp");
+
+  r = buildenv_heap_mgr->open_heap(buildenv_heap_mgr, "tmp",
+                                   heapdir, j->errmsg, sizeof(j->errmsg), 1);
+
   if(r)
-    return r;
+      return r;
 
   job_report_status(j, "building", "Extracting build environment %s from %s",
                     id, source);
@@ -317,9 +314,12 @@ buildenv_install(job_t *j)
                    CAP_MKNOD,
                    -1);
 
-  if(r) {
-    buildenv_heap_mgr->delete_heap(buildenv_heap_mgr, id);
+  if(!r)
+      r = buildenv_heap_mgr->rename_heap(buildenv_heap_mgr, "tmp", id, NULL,
+                                         j->errmsg, sizeof(j->errmsg));
+
+  if(r)
     return DOOZER_PERMANENT_FAIL;
-  }
+
   return 0;
 }

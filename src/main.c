@@ -261,7 +261,7 @@ main(int argc, char **argv)
   sigset_t set;
   const char *cfgfile = NULL;
 
-  const char *defconf = "agent.json";
+  const char *defconf = "doozer-agent.json";
 
   signal(SIGPIPE, handle_sigpipe);
 
@@ -271,7 +271,7 @@ main(int argc, char **argv)
       cfgfile = optarg;
       break;
     case 's':
-      enable_syslog("doozer", optarg);
+      enable_syslog("doozer-agent", optarg);
       break;
     }
   }

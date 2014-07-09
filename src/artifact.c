@@ -82,7 +82,6 @@ artifact_process_thread(void *aux)
 
     int r = deflate(&z, Z_FINISH);
     if(r < 0) {
-      printf("Failed to compress: %d\n", r);
       munmap(out, a->mapsize);
       a->gzip = 0;
       goto enq;

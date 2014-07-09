@@ -19,6 +19,7 @@
 #include "libsvc/htsbuf.h"
 #include "libsvc/talloc.h"
 #include "libsvc/htsmsg_json.h"
+#include "libsvc/cfg.h"
 
 #include "job.h"
 #include "git.h"
@@ -31,20 +32,37 @@
 static int
 dotdoozer_parse(job_t *j, htsmsg_t *target)
 {
+  SHA_CTX ctx;
+  uint8_t digest[20];
+
   const char *buildenv = htsmsg_get_str(target, "buildenv");
   if(buildenv == NULL)
     return 0;
 
+  cfg_root(root);
+  const char *source = cfg_get_str(root, CFG("buildenvs", buildenv, "source"),
+                                   NULL);
+  if(source == NULL) {
+    snprintf(j->errmsg, sizeof(j->errmsg), "Don't know about buildenv: %s",
+             buildenv);
+    return DOOZER_PERMANENT_FAIL;
+  }
+
   // We are going to build in a chroot
   j->projectdir_internal = "/project";
 
-  j->base_buildenv = tstrdup(buildenv);
+  j->buildenv_source = tstrdup(source);
 
-  SHA_CTX ctx;
+  // Compute SHA1 of source URL, this is the source ID
+
+  SHA1((void *)source, strlen(source), digest);
+  bin2hex(j->buildenv_source_id, sizeof(j->buildenv_source_id),
+          digest, sizeof(digest));
+
+  // Compute SHA1 of source URL + all build deps, this is the modified ID
+
   SHA1_Init(&ctx);
-
-  SHA1_Update(&ctx, j->base_buildenv, strlen(j->base_buildenv));
-
+  SHA1_Update(&ctx, source, strlen(source));
   htsmsg_t *builddeps = htsmsg_get_list(target, "builddeps");
   if(builddeps != NULL) {
 
@@ -71,7 +89,10 @@ dotdoozer_parse(job_t *j, htsmsg_t *target)
     j->builddeps = bds;
   }
 
-  SHA1_Final(j->modified_buildenv_digest, &ctx);
+  SHA1_Final(digest, &ctx);
+
+  bin2hex(j->buildenv_modified_id, sizeof(j->buildenv_modified_id),
+          digest, sizeof(digest));
   return 0;
 }
 
@@ -83,20 +104,16 @@ static int
 dotdoozer_prep_buildenv(job_t *j)
 {
   int r;
-  char modified_heap[41];
   char path[PATH_MAX];
 
   // Delete any current heap
 
   buildenv_heap_mgr->delete_heap(buildenv_heap_mgr, "current");
 
-  // Name of the modified builvenv is just the sha1 hash
-
-  bin2hex(modified_heap, sizeof(modified_heap),
-          j->modified_buildenv_digest, sizeof(j->modified_buildenv_digest));
+  // Clone modified buildenv to current
 
   r = buildenv_heap_mgr->clone_heap(buildenv_heap_mgr,
-                                    modified_heap,
+                                    j->buildenv_modified_id,
                                     "current", path,
                                     j->errmsg, sizeof(j->errmsg));
   if(!r) {
@@ -111,15 +128,21 @@ dotdoozer_prep_buildenv(job_t *j)
   if(r)
     return r;
 
+  buildenv_heap_mgr->delete_heap(buildenv_heap_mgr, "tmp");
+
   r = buildenv_heap_mgr->clone_heap(buildenv_heap_mgr,
-                                    j->base_buildenv,
-                                    modified_heap,
+                                    j->buildenv_source_id,
+                                    "tmp",
                                     path,
                                     j->errmsg, sizeof(j->errmsg));
   if(r)
     return r;
 
   j->buildenvdir = tstrdup(path);
+
+  r = job_run_command(j,
+                      (const char *[]){"apt-get", "update", NULL},
+                      JOB_RUN_AS_ROOT);
 
   int argc = 4 + j->num_builddeps + 1;
   const char **argv = talloc_malloc(argc * sizeof(char *));
@@ -136,8 +159,16 @@ dotdoozer_prep_buildenv(job_t *j)
 
   r = job_run_command(j, argv, JOB_RUN_AS_ROOT);
 
+  if(!r) {
+    buildenv_heap_mgr->rename_heap(buildenv_heap_mgr, "tmp",
+                                   j->buildenv_modified_id,
+                                   path,
+                                   j->errmsg, sizeof(j->errmsg));
+    j->buildenvdir = tstrdup(path);
+  }
+
   if(r)
-    buildenv_heap_mgr->delete_heap(buildenv_heap_mgr, modified_heap);
+    buildenv_heap_mgr->delete_heap(buildenv_heap_mgr, "tmp");
 
   return r;
 }
@@ -157,8 +188,6 @@ dotdoozer_do_build(job_t *j, htsmsg_t *target)
     return DOOZER_PERMANENT_FAIL;
   }
 
-  printf("buildcmd: %s\n", buildcmd);
-
   char *arg = mystrdupa(buildcmd);
   const char *argv[257];
   int argc = str_tokenize(arg, (char **)argv, 256, ' ');
@@ -177,6 +206,12 @@ dotdoozer_do_build(job_t *j, htsmsg_t *target)
       argv[i] = workdir;
     else if(!strcmp(argv[i], "${PARALLEL}"))
       argv[i] = "2";
+    else if(!strcmp(argv[i], "${VERSION}"))
+      argv[i] = j->version;
+    else if(!strcmp(argv[i], "${REVISION}"))
+      argv[i] = j->revision;
+    else if(!strcmp(argv[i], "${PROJECT}"))
+      argv[i] = j->project;
   }
 
   return job_run_command(j, argv, 0);

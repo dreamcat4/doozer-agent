@@ -321,7 +321,6 @@ spawn(int (*exec_cb)(void *opaque),
     } else if(fds[1].revents & (POLLHUP | POLLERR)) {
       break;
     } else {
-      printf("POLL WAT\n");
       sleep(1);
       continue;
     }
@@ -390,11 +389,12 @@ spawn(int (*exec_cb)(void *opaque),
     return DOOZER_TEMPORARY_FAIL;
   }
 
-  printf("RESOURCE USAGE: user:%ld.%ld system:%ld.%ld\n",
-         rr.ru_utime.tv_sec,
-         rr.ru_utime.tv_usec,
-         rr.ru_stime.tv_sec,
-         rr.ru_stime.tv_usec);
+  if(print_to_stdout)
+    printf("RESOURCE USAGE: user:%ld.%ld system:%ld.%ld\n",
+           rr.ru_utime.tv_sec,
+           rr.ru_utime.tv_usec,
+           rr.ru_stime.tv_sec,
+           rr.ru_stime.tv_usec);
 
   if(got_timeout) {
     snprintf(errbuf, errlen, "No output detected for %d seconds",

@@ -22,7 +22,7 @@ WITH_CURL    := yes
 
 BUILDDIR = ${CURDIR}/build
 
-PROG=${BUILDDIR}/doozeragent
+PROG=${BUILDDIR}/doozer-agent
 
 SRCS =  src/main.c \
 	src/agent.c \
@@ -45,9 +45,9 @@ endif
 LDFLAGS += -lz
 
 install: ${PROG}
-	install -D ${PROG} "${prefix}/bin/doozeragent"
+	install -D ${PROG} "${prefix}/bin/doozer-agent"
 uninstall:
-	rm -f "${prefix}/bin/doozeragent"
+	rm -f "${prefix}/bin/doozer-agent"
 
 include libsvc/libsvc.mk
 -include $(DEPS)

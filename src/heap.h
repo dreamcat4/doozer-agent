@@ -16,6 +16,10 @@ typedef struct heapmgr {
                     const char *dst, char outpath[PATH_MAX],
                     char *errbuf, size_t errlen);
 
+  int (*rename_heap)(struct heapmgr *hm, const char *src,
+                     const char *dst, char outpath[PATH_MAX],
+                     char *errbuf, size_t errlen);
+
 } heapmgr_t;
 
 

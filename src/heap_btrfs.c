@@ -194,6 +194,33 @@ heap_btrfs_clone(struct heapmgr *super, const char *src, const char *dst,
 /**
  *
  */
+static int
+heap_btrfs_rename(struct heapmgr *super, const char *src, const char *dst,
+                  char outpath[PATH_MAX], char *errbuf, size_t errlen)
+{
+  heapmgr_btrfs_t *hm = (heapmgr_btrfs_t *)super;
+
+  char srcpath[PATH_MAX];
+  char dstpath[PATH_MAX];
+
+  if(outpath == NULL)
+    outpath = dstpath;
+
+  snprintf(srcpath, sizeof(srcpath), "%s/%s", hm->path, src);
+  snprintf(outpath, PATH_MAX, "%s/%s", hm->path, dst);
+
+  if(!rename(srcpath, dstpath))
+    return 0;
+
+  snprintf(errbuf, errlen, "Unable to rename %s to %s -- %s",
+           srcpath, dstpath, strerror(errno));
+  return -1;
+}
+
+
+/**
+ *
+ */
 heapmgr_t *
 heap_btrfs_init(const char *path)
 {
@@ -221,6 +248,7 @@ heap_btrfs_init(const char *path)
   hm->super.open_heap = heap_btrfs_open;
   hm->super.delete_heap = heap_btrfs_delete;
   hm->super.clone_heap = heap_btrfs_clone;
+  hm->super.rename_heap = heap_btrfs_rename;
 
   return &hm->super;
 }

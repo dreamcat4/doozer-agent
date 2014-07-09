@@ -38,7 +38,7 @@ update_cb(const char *refname, const git_oid *a, const git_oid *b, void *data)
     git_oid_fmt(a_str, a);
     a_str[GIT_OID_HEXSZ] = '\0';
     printf("GIT: [updated] %.10s..%.10s %s\n",
-         a_str, b_str, refname);
+           a_str, b_str, refname);
   }
   return 0;
 }
@@ -49,8 +49,10 @@ update_cb(const char *refname, const git_oid *a, const git_oid *b, void *data)
 static int
 progress_cb(const char *str, int len, void *data)
 {
-  printf("remote: %.*s", len, str);
-  fflush(stdout); /* We don't have the \n to force the flush */
+  if(isatty(1)) {
+    printf("remote: %.*s", len, str);
+    fflush(stdout); /* We don't have the \n to force the flush */
+  }
 
   if(!running)
     return 1;
@@ -153,10 +155,11 @@ repo_fetch(git_repository *repo, job_t *j)
 
   git_remote_callbacks callbacks = GIT_REMOTE_CALLBACKS_INIT;
 
-  callbacks.update_tips = &update_cb;
   callbacks.payload = j;
+
   if(isatty(1))
-    callbacks.progress = &progress_cb;
+    callbacks.update_tips = &update_cb;
+  callbacks.progress = &progress_cb;
 
   callbacks.credentials = &cred_acquire_cb;
 

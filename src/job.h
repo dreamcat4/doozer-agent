@@ -45,17 +45,14 @@ typedef struct job {
   // Build environment
   const char *buildenvdir;
 
-  // ID of base buildenv
-  const char *base_buildenv;
+  // Source (URL) to build environment
+  const char *buildenv_source;
+
+  // SHA1 of buildenv source
+  char buildenv_source_id[41];
 
   // SHA1 of components that form the final build environment
-  uint8_t modified_buildenv_digest[20];
-
-  int (*query_env)(struct job *j);
-
-  int (*prep_env)(struct job *j);
-
-  int (*build)(struct job *j);
+  char buildenv_modified_id[41];
 
   const char **builddeps;
   int num_builddeps;
