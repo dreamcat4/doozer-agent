@@ -17,6 +17,7 @@ LIST_HEAD(artifact_list, artifact);
  */
 typedef struct job {
   struct buildmaster *bm;
+  struct htsmsg *jobmsg;
   struct artifact_list artifacts;
 
   pthread_cond_t artifact_cond;

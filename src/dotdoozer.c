@@ -141,13 +141,13 @@ dotdoozer_prep_buildenv(job_t *j)
   j->buildenvdir = tstrdup(path);
 
   r = job_run_command(j,
-                      (const char *[]){"/usr/bin/apt-get", "update", NULL},
+                      (const char *[]){"apt-get", "update", NULL},
                       JOB_RUN_AS_ROOT);
 
   int argc = 4 + j->num_builddeps + 1;
   const char **argv = talloc_malloc(argc * sizeof(char *));
 
-  argv[0] = "/usr/bin/apt-get";
+  argv[0] = "apt-get";
   argv[1] = "--yes";
   argv[2] = "--force-yes";
   argv[3] = "install";
@@ -178,16 +178,8 @@ dotdoozer_prep_buildenv(job_t *j)
  *
  */
 static int
-dotdoozer_do_build(job_t *j, htsmsg_t *target)
+dotdoozer_run_one_buildcmd(job_t *j, const char *buildcmd)
 {
-  const char *buildcmd = htsmsg_get_str(target, "buildcmd");
-
-  if(buildcmd == NULL) {
-    snprintf(j->errmsg, sizeof(j->errmsg),
-             "No build command");
-    return DOOZER_PERMANENT_FAIL;
-  }
-
   char *arg = mystrdupa(buildcmd);
   const char *argv[257];
   int argc = str_tokenize(arg, (char **)argv, 256, ' ');
@@ -221,9 +213,77 @@ dotdoozer_do_build(job_t *j, htsmsg_t *target)
 /**
  *
  */
+static int
+dotdoozer_do_build(job_t *j, htsmsg_t *target)
+{
+  const char *buildcmd = htsmsg_get_str(target, "buildcmd");
+
+  if(buildcmd != NULL)
+    return dotdoozer_run_one_buildcmd(j, buildcmd);
+
+  htsmsg_t *list = htsmsg_get_list(target, "buildcmd");
+  if(list == NULL) {
+    snprintf(j->errmsg, sizeof(j->errmsg),
+             "No build command");
+    return DOOZER_PERMANENT_FAIL;
+  }
+
+  htsmsg_field_t *f;
+  HTSMSG_FOREACH(f, list) {
+    if(f->hmf_type != HMF_STR)
+      continue;
+    int r = dotdoozer_run_one_buildcmd(j, f->hmf_str);
+    if(r)
+      return r;
+  }
+  return 0;
+}
+
+
+/**
+ *
+ */
+static int
+dotdoozer_exec(job_t *j, htsmsg_t *doc)
+{
+  htsmsg_t *targets = htsmsg_get_map(doc, "targets");
+  if(targets == NULL) {
+    snprintf(j->errmsg, sizeof(j->errmsg),
+             "'targets' missing in .doozer.json");
+    htsmsg_destroy(doc);
+    return DOOZER_PERMANENT_FAIL;
+  }
+
+  htsmsg_t *target = htsmsg_get_map(targets, j->target);
+  if(target == NULL) {
+    snprintf(j->errmsg, sizeof(j->errmsg),
+             "'targets' does not contain '%s' in .doozer.json", j->target);
+    htsmsg_destroy(doc);
+    return DOOZER_PERMANENT_FAIL;
+  }
+
+  int rval = dotdoozer_parse(j, target);
+  if(!rval)
+    rval = dotdoozer_prep_buildenv(j);
+
+  if(!rval)
+    rval = dotdoozer_do_build(j, target);
+  return rval;
+}
+
+
+/**
+ *
+ */
 int
 dotdoozer_build(job_t *j)
 {
+  htsmsg_t *doc;
+
+  doc = htsmsg_get_map(j->jobmsg, "dotdoozer");
+  if(doc != NULL)
+    return dotdoozer_exec(j, doc);
+
   char path[PATH_MAX];
   snprintf(path, sizeof(path),
            "%s/repo/checkout/.doozer.json", j->projectdir_external);
@@ -259,33 +319,11 @@ dotdoozer_build(job_t *j)
 
   mem[st.st_size] = 0;
 
-  htsmsg_t *doc = htsmsg_json_deserialize(mem, j->errmsg, sizeof(j->errmsg));
+  doc = htsmsg_json_deserialize(mem, j->errmsg, sizeof(j->errmsg));
   if(doc == NULL)
     return DOOZER_PERMANENT_FAIL;
 
-  htsmsg_t *targets = htsmsg_get_map(doc, "targets");
-  if(targets == NULL) {
-    snprintf(j->errmsg, sizeof(j->errmsg),
-             "'targets' missing in .doozer.json");
-    htsmsg_destroy(doc);
-    return DOOZER_PERMANENT_FAIL;
-  }
-
-  htsmsg_t *target = htsmsg_get_map(targets, j->target);
-  if(target == NULL) {
-    snprintf(j->errmsg, sizeof(j->errmsg),
-             "'targets' does not contain '%s' in .doozer.json", j->target);
-    htsmsg_destroy(doc);
-    return DOOZER_PERMANENT_FAIL;
-  }
-
-  int rval = dotdoozer_parse(j, target);
-  if(!rval)
-    rval = dotdoozer_prep_buildenv(j);
-
-  if(!rval)
-    rval = dotdoozer_do_build(j, target);
-
+  int rval = dotdoozer_exec(j, doc);
   htsmsg_destroy(doc);
   return rval;
 }

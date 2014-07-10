@@ -454,6 +454,7 @@ job_run_command_spawn(void *opaque)
     setsid();
   }
 
+
   char homevar[PATH_MAX];
   snprintf(homevar, sizeof(homevar), "HOME=%s/home", j->projectdir_internal);
 
@@ -467,7 +468,10 @@ job_run_command_spawn(void *opaque)
     NULL
   };
 
-  execve(aux->argv[0], (void *)aux->argv, (void *)envp);
+  extern char **environ;
+
+  environ = (void *)envp;
+  execvp(aux->argv[0], (void *)aux->argv);
   fprintf(stderr, "Unable to execute %s -- %s\n",
           aux->argv[0], strerror(errno));
   return 127;
@@ -623,7 +627,7 @@ job_process(buildmaster_t *bm, htsmsg_t *msg)
 {
   job_t j = {};
   j.bm = bm;
-
+  j.jobmsg = msg;
 
   const char *type = htsmsg_get_str(msg, "type");
   if(type == NULL)
@@ -638,10 +642,12 @@ job_process(buildmaster_t *bm, htsmsg_t *msg)
     return;
   }
 
-  j.jobsecret = htsmsg_get_str(msg, "jobsecret");
-  if(j.jobsecret == NULL) {
-    trace(LOG_ERR, "Job has no jobsecret");
-    return;
+  if(bm != NULL) {
+    j.jobsecret = htsmsg_get_str(msg, "jobsecret");
+    if(j.jobsecret == NULL) {
+      trace(LOG_ERR, "Job has no jobsecret");
+      return;
+    }
   }
 
   /*
