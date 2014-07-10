@@ -282,6 +282,8 @@ job_run_command_line_intercept(void *opaque,
   return err;
 }
 
+#ifdef linux
+
 static int job_terminated = 0;
 
 /**
@@ -292,6 +294,7 @@ jobterm(int x)
 {
   job_terminated = 1;
 }
+#endif
 
 
 /**
@@ -302,9 +305,12 @@ job_run_command_spawn(void *opaque)
 {
   job_run_command_aux_t *aux = opaque;
   job_t *j = aux->job;
-  char path[PATH_MAX];
+
+#ifdef linux
 
   if(j->buildenvdir != NULL) {
+
+    char path[PATH_MAX];
 
     linux_cap_change(1, CAP_SYS_ADMIN, -1);
 
@@ -453,7 +459,7 @@ job_run_command_spawn(void *opaque)
     }
     setsid();
   }
-
+#endif
 
   char homevar[PATH_MAX];
   snprintf(homevar, sizeof(homevar), "HOME=%s/home", j->projectdir_internal);

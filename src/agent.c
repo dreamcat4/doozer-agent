@@ -61,8 +61,8 @@ call_buildmaster0(buildmaster_t *bm, int flags, const char *accepthdr,
   curl_easy_setopt(curl, CURLOPT_OPENSOCKETDATA, NULL);
 
   if(flags & BM_FLAG_STOPPABLE) {
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &flags);
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, &xferfunc);
+    curl_easy_setopt(curl, CURLOPT_PROGRESSDATA, &flags);
+    curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, &xferfunc);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
   }
 

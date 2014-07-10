@@ -104,9 +104,8 @@ create_heap(const char *path)
   heapmgr_t *h;
 #ifdef linux
   h = heap_btrfs_init(path);
-#endif
-
   if(h == NULL)
+#endif
     h = heap_simple_init(path);
 
   if(h == NULL) {

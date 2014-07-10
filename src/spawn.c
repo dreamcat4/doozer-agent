@@ -218,10 +218,10 @@ spawn(int (*exec_cb)(void *opaque),
   forkerr = errno;
   munmap(stack, initial_stacksize);
 #else
-  pid = fork();
+  a->pid = fork();
   forkerr = errno;
 
-  if(pid == 0) {
+  if(a->pid == 0) {
     int r = child(a);
     exit(r);
   }
@@ -390,11 +390,11 @@ spawn(int (*exec_cb)(void *opaque),
   }
 
   if(print_to_stdout)
-    printf("RESOURCE USAGE: user:%ld.%ld system:%ld.%ld\n",
-           rr.ru_utime.tv_sec,
-           rr.ru_utime.tv_usec,
-           rr.ru_stime.tv_sec,
-           rr.ru_stime.tv_usec);
+    printf("RESOURCE USAGE: user:%d.%d system:%d.%d\n",
+           (int)rr.ru_utime.tv_sec,
+           (int)rr.ru_utime.tv_usec,
+           (int)rr.ru_stime.tv_sec,
+           (int)rr.ru_stime.tv_usec);
 
   if(got_timeout) {
     snprintf(errbuf, errlen, "No output detected for %d seconds",
