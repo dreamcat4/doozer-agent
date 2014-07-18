@@ -196,8 +196,12 @@ dotdoozer_run_one_buildcmd(job_t *j, const char *buildcmd)
       argv[i] = j->target;
     else if(!strcmp(argv[i], "${WORKDIR}"))
       argv[i] = workdir;
-    else if(!strcmp(argv[i], "${PARALLEL}"))
-      argv[i] = "2";
+    else if(!strcmp(argv[i], "${PARALLEL}")) {
+      const int numcpus = sysconf( _SC_NPROCESSORS_ONLN );
+      char cpus[16];
+      snprintf(cpus, sizeof(cpus), "%d", numcpus + 1);
+      argv[i] = cpus;
+    }
     else if(!strcmp(argv[i], "${VERSION}"))
       argv[i] = j->version;
     else if(!strcmp(argv[i], "${REVISION}"))
