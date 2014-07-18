@@ -105,6 +105,8 @@ child(void *A)
   close(a->pipe_stdout[1]);
   close(a->pipe_stderr[1]);
 
+  if(nice(10)) {}
+
   return a->exec_cb(a->opaque);
 }
 
