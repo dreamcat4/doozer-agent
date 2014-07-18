@@ -308,9 +308,10 @@ job_run_command_spawn(void *opaque)
 
 #ifdef linux
 
+  char path[PATH_MAX];
+
   if(j->buildenvdir != NULL) {
 
-    char path[PATH_MAX];
 
     linux_cap_change(1, CAP_SYS_ADMIN, -1);
 
